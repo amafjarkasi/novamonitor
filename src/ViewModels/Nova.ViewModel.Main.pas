@@ -54,6 +54,7 @@ type
     // Column sort state: 0 = PID, 1 = Name, 2 = CPU, 3 = Memory, 4 = Status, 5 = Threads
     FSortColumn: Integer;
     FSortAscending: Boolean;
+    FPollingIntervalMs: Cardinal;
 
     procedure HandleMetricsUpdate(const AMetrics: TSystemMetrics);
     procedure HandleProcessesUpdate(const AProcesses: TProcessList);
@@ -85,6 +86,7 @@ type
     procedure RefreshServices;
     procedure SetServiceSearchFilter(const AFilter: string);
     procedure SetServiceStatusFilter(const AFilter: Integer);
+    procedure SetPollingInterval(const AIntervalMs: Cardinal);
 
     property LatestMetrics: TSystemMetrics read FLatestMetrics;
     property FilteredProcesses: TProcessList read FFilteredProcesses;
@@ -98,6 +100,7 @@ type
     property SortColumn: Integer read FSortColumn;
     property SortAscending: Boolean read FSortAscending;
     property FilterMode: TProcessFilterMode read FFilterMode;
+    property PollingIntervalMs: Cardinal read FPollingIntervalMs;
     property CpuHistory: THistoryBuffer read FCpuHistory;
     property RamHistory: THistoryBuffer read FRamHistory;
 
@@ -147,6 +150,7 @@ begin
   FLatestMetrics := TSystemMetrics.CreateEmpty;
   FSortColumn := 3; // Memory, descending: largest consumers first on startup
   FSortAscending := False;
+  FPollingIntervalMs := 1500;
 end;
 
 destructor TMainViewModel.Destroy;
@@ -183,15 +187,15 @@ begin
   RefreshNetworkConnections;
   RefreshServices;
 
-  // Start continuous async background polling at 1500ms intervals
+  // Start continuous async background polling at configured interval
   FMetricsService.StartMonitoring(
-    1500,
+    FPollingIntervalMs,
     HandleMetricsUpdate,
     HandleProcessesUpdate
   );
 
   if Assigned(FOnStatusMessage) then
-    FOnStatusMessage('Telemetry monitor active (async worker polling at 1.5s)', False);
+    FOnStatusMessage(Format('Telemetry monitor active (async worker polling at %.1fs)', [FPollingIntervalMs / 1000.0]), False);
 end;
 
 procedure TMainViewModel.ToggleMonitoring;
@@ -205,12 +209,24 @@ begin
   else
   begin
     FMetricsService.StartMonitoring(
-      1500,
+      FPollingIntervalMs,
       HandleMetricsUpdate,
       HandleProcessesUpdate
     );
     if Assigned(FOnStatusMessage) then
       FOnStatusMessage('Monitoring resumed', False);
+  end;
+end;
+
+procedure TMainViewModel.SetPollingInterval(const AIntervalMs: Cardinal);
+begin
+  if AIntervalMs = 0 then Exit;
+  FPollingIntervalMs := AIntervalMs;
+  if Assigned(FMetricsService) then
+  begin
+    FMetricsService.SetInterval(AIntervalMs);
+    if Assigned(FOnStatusMessage) then
+      FOnStatusMessage(Format('Polling interval set to %.1fs', [AIntervalMs / 1000.0]), False);
   end;
 end;
 

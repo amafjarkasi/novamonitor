@@ -189,6 +189,8 @@ type
       const OnProcessUpdate: TProcessListUpdateEvent);
     procedure StopMonitoring;
     function IsMonitoring: Boolean;
+    procedure SetInterval(const AIntervalMs: Cardinal);
+    function GetInterval: Cardinal;
     function CollectSnapshot: TSystemMetrics;
     function CollectProcesses: TProcessList;
     function CollectNetworkConnections: TNetworkConnectionList;

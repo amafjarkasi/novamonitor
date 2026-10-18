@@ -110,6 +110,7 @@ type
     FActiveView: TAppView;
     FContextMenu: TPopupMenu;
 
+    cmbInterval: TComboBox;
     btnPinWindow: TButton;
     btnFilterAll: TButton;
     btnFilterMem: TButton;
@@ -185,6 +186,7 @@ type
     procedure btnSvcFilterAllClick(Sender: TObject);
     procedure btnSvcFilterRunningClick(Sender: TObject);
     procedure btnSvcFilterStoppedClick(Sender: TObject);
+    procedure cmbIntervalChange(Sender: TObject);
 
     procedure AppMinimize(Sender: TObject);
     procedure TrayIconClick(Sender: TObject);
@@ -251,6 +253,10 @@ begin
 
   Font.Name := 'Segoe UI';
   Font.Size := 9;
+  ClientWidth := 1400;
+  ClientHeight := 800;
+  Constraints.MinWidth := 1120;
+  Constraints.MinHeight := 680;
   FInitialized := False;
   FActiveView := avDashboard;
 
@@ -271,18 +277,36 @@ begin
   lvProcesses.OwnerData := True;
   lvProcesses.OnData := lvProcessesData;
 
-  // Configure Header Pin Window (Always on Top) toggle button
-  pnlHeaderActions.Width := 520;
+  // Configure Header Actions (Search, Polling Interval, Pin, Pause/Resume, Export)
+  pnlHeaderActions.Width := 600;
+
+  edtSearch.AutoSize := False;
+  edtSearch.SetBounds(16, 18, 190, 28);
+
+  cmbInterval := TComboBox.Create(Self);
+  cmbInterval.Parent := pnlHeaderActions;
+  cmbInterval.Style := csDropDownList;
+  cmbInterval.SetBounds(214, 18, 110, 28);
+  cmbInterval.Items.Add('0.5s (Fast)');
+  cmbInterval.Items.Add('1.0s');
+  cmbInterval.Items.Add('1.5s (Normal)');
+  cmbInterval.Items.Add('2.5s');
+  cmbInterval.Items.Add('5.0s (Eco)');
+  cmbInterval.ItemIndex := 2;
+  cmbInterval.OnChange := cmbIntervalChange;
+  cmbInterval.Hint := 'Telemetry Polling Interval';
+  cmbInterval.ShowHint := True;
+
   btnPinWindow := TButton.Create(Self);
   btnPinWindow.Parent := pnlHeaderActions;
-  btnPinWindow.SetBounds(222, 18, 54, 28);
+  btnPinWindow.SetBounds(332, 18, 54, 28);
   btnPinWindow.Caption := 'Pin';
   btnPinWindow.Hint := 'Toggle Always on Top (Ctrl+P)';
   btnPinWindow.ShowHint := True;
   btnPinWindow.OnClick := btnPinWindowClick;
 
-  btnToggleMonitor.Left := 282;
-  btnExportSnapshot.Left := 386;
+  btnToggleMonitor.SetBounds(394, 18, 88, 28);
+  btnExportSnapshot.SetBounds(490, 18, 94, 28);
 
   // Sidebar navigation: Network and Services tabs
   btnNavNetwork := TButton.Create(Self);
@@ -333,9 +357,12 @@ end;
 
 procedure TMainForm.SetupTableToolbarActions;
 begin
+  lblTableTitle.Caption := 'Active Tasks';
+  lblTableTitle.SetBounds(16, 10, 100, 20);
+
   btnFilterAll := TButton.Create(Self);
   btnFilterAll.Parent := pnlTableToolbar;
-  btnFilterAll.SetBounds(210, 7, 46, 26);
+  btnFilterAll.SetBounds(135, 7, 46, 26);
   btnFilterAll.Caption := '[All]';
   btnFilterAll.Hint := 'Show all active processes (Ctrl+1)';
   btnFilterAll.ShowHint := True;
@@ -343,7 +370,7 @@ begin
 
   btnFilterMem := TButton.Create(Self);
   btnFilterMem.Parent := pnlTableToolbar;
-  btnFilterMem.SetBounds(260, 7, 142, 26);
+  btnFilterMem.SetBounds(187, 7, 142, 26);
   btnFilterMem.Caption := 'Heavy RAM (>400MB)';
   btnFilterMem.Hint := 'Filter processes consuming >400MB RAM (Ctrl+2)';
   btnFilterMem.ShowHint := True;
@@ -351,7 +378,7 @@ begin
 
   btnFilterCpu := TButton.Create(Self);
   btnFilterCpu.Parent := pnlTableToolbar;
-  btnFilterCpu.SetBounds(406, 7, 116, 26);
+  btnFilterCpu.SetBounds(335, 7, 118, 26);
   btnFilterCpu.Caption := 'Active CPU (>2%)';
   btnFilterCpu.Hint := 'Filter processes actively using >2% CPU (Ctrl+3)';
   btnFilterCpu.ShowHint := True;
@@ -359,7 +386,7 @@ begin
 
   btnFilterCrit := TButton.Create(Self);
   btnFilterCrit.Parent := pnlTableToolbar;
-  btnFilterCrit.SetBounds(526, 7, 65, 26);
+  btnFilterCrit.SetBounds(459, 7, 68, 26);
   btnFilterCrit.Caption := 'Alerts';
   btnFilterCrit.Hint := 'Filter processes in Warning or Critical state (Ctrl+4)';
   btnFilterCrit.ShowHint := True;
@@ -367,7 +394,7 @@ begin
 
   btnEndTask := TButton.Create(Self);
   btnEndTask.Parent := pnlTableToolbar;
-  btnEndTask.SetBounds(595, 7, 85, 26);
+  btnEndTask.SetBounds(533, 7, 85, 26);
   btnEndTask.Caption := 'End Task';
   btnEndTask.Hint := 'Terminate selected process (Del)';
   btnEndTask.ShowHint := True;
@@ -375,7 +402,7 @@ begin
 
   btnToggleTree := TButton.Create(Self);
   btnToggleTree.Parent := pnlTableToolbar;
-  btnToggleTree.SetBounds(685, 7, 85, 26);
+  btnToggleTree.SetBounds(624, 7, 85, 26);
   btnToggleTree.Caption := 'Tree View';
   btnToggleTree.Hint := 'Toggle Hierarchical Tree / Flat View';
   btnToggleTree.ShowHint := True;
@@ -1024,7 +1051,8 @@ begin
   lvProcesses.Color := AColors.Surface;
   lvProcesses.Font.Color := AColors.TextPrimary;
 
-  chkTray.Font.Color := AColors.TextSecondary;
+  chkTray.Font.Color := AColors.SidebarText;
+  chkTray.Font.Style := [fsBold];
 
   pnlFooter.Color := AColors.Surface;
   lblFooterStatus.Font.Color := AColors.TextSecondary;
@@ -1032,6 +1060,12 @@ begin
 
   edtSearch.Color := AColors.SurfaceCard;
   edtSearch.Font.Color := AColors.TextPrimary;
+
+  if Assigned(cmbInterval) then
+  begin
+    cmbInterval.Color := AColors.SurfaceCard;
+    cmbInterval.Font.Color := AColors.TextPrimary;
+  end;
 
   if Assigned(pnlNetworkSection) then
   begin
@@ -1192,7 +1226,7 @@ begin
   // Render rolling sparkline in the upper-right quadrant if history exists
   if Length(AHistory) >= 2 then
   begin
-    SparkR := Rect(R.Right - 70, R.Top + 14, R.Right - 12, R.Bottom - 26);
+    SparkR := Rect(R.Right - 85, R.Top + 12, R.Right - 14, R.Bottom - 26);
     TUIUtils.DrawSparkline(C, SparkR, AHistory, ABarColor,
       TUIUtils.BlendColor(FColors.SurfaceCard, ABarColor, 0.22));
   end;
@@ -1546,6 +1580,22 @@ begin
   btnSvcFilterRunning.Caption := 'Running';
   btnSvcFilterStopped.Caption := '[Stopped]';
   FViewModel.SetServiceStatusFilter(2);
+end;
+
+procedure TMainForm.cmbIntervalChange(Sender: TObject);
+var
+  IntervalMs: Cardinal;
+begin
+  case cmbInterval.ItemIndex of
+    0: IntervalMs := 500;
+    1: IntervalMs := 1000;
+    2: IntervalMs := 1500;
+    3: IntervalMs := 2500;
+    4: IntervalMs := 5000;
+  else
+    IntervalMs := 1500;
+  end;
+  FViewModel.SetPollingInterval(IntervalMs);
 end;
 
 end.

@@ -2,8 +2,8 @@ object MainForm: TMainForm
   Left = 0
   Top = 0
   Caption = 'NovaMonitor - Professional System Telemetry Dashboard'
-  ClientHeight = 720
-  ClientWidth = 1120
+  ClientHeight = 800
+  ClientWidth = 1400
   Color = clBtnFace
   Font.Charset = DEFAULT_CHARSET
   Font.Color = clWindowText
@@ -20,7 +20,7 @@ object MainForm: TMainForm
     Left = 0
     Top = 0
     Width = 220
-    Height = 688
+    Height = 768
     Align = alLeft
     BevelOuter = bvNone
     TabOrder = 0
@@ -159,7 +159,7 @@ object MainForm: TMainForm
   object pnlHeader: TPanel
     Left = 220
     Top = 0
-    Width = 900
+    Width = 1180
     Height = 64
     Align = alTop
     BevelOuter = bvNone
@@ -178,9 +178,9 @@ object MainForm: TMainForm
       ParentFont = False
     end
     object pnlHeaderActions: TPanel
-      Left = 460
+      Left = 580
       Top = 0
-      Width = 440
+      Width = 600
       Height = 64
       Align = alRight
       BevelOuter = bvNone
@@ -188,8 +188,9 @@ object MainForm: TMainForm
       object edtSearch: TEdit
         Left = 16
         Top = 18
-        Width = 200
-        Height = 29
+        Width = 190
+        Height = 28
+        AutoSize = False
         Color = clWhite
         Font.Charset = DEFAULT_CHARSET
         Font.Color = clWindowText
@@ -225,15 +226,15 @@ object MainForm: TMainForm
   object pnlContent: TPanel
     Left = 220
     Top = 64
-    Width = 900
-    Height = 624
+    Width = 1180
+    Height = 704
     Align = alClient
     BevelOuter = bvNone
     TabOrder = 2
     object pnlMetricsGrid: TPanel
       Left = 0
       Top = 0
-      Width = 900
+      Width = 1180
       Height = 130
       Align = alTop
       BevelOuter = bvNone
@@ -289,11 +290,11 @@ object MainForm: TMainForm
         BevelOuter = bvNone
         TabOrder = 0
         object lblTableTitle: TLabel
-          Left = 8
+          Left = 16
           Top = 10
-          Width = 197
+          Width = 85
           Height = 17
-          Caption = 'Active Tasks && Workload Memory'
+          Caption = 'Active Tasks'
           Font.Charset = DEFAULT_CHARSET
           Font.Color = clWindowText
           Font.Height = -13
@@ -367,8 +368,8 @@ object MainForm: TMainForm
   end
   object pnlFooter: TPanel
     Left = 0
-    Top = 688
-    Width = 1120
+    Top = 768
+    Width = 1400
     Height = 32
     Align = alBottom
     BevelOuter = bvNone

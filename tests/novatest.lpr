@@ -92,6 +92,14 @@ begin
     Check('terminate: PID 4 (System) guarded', not Svc.TerminateProcessById(4));
     Check('terminate: PID CurrentProcess guarded', not Svc.TerminateProcessById(GetCurrentProcessId));
 
+    // --- Polling Interval Tests ---
+    WriteLn('Testing Polling Interval Dynamic Control...');
+    Check('interval: default is 1500ms', Svc.GetInterval = 1500);
+    Svc.SetInterval(500);
+    Check('interval: set to 500ms reflects in GetInterval', Svc.GetInterval = 500);
+    Svc.SetInterval(2500);
+    Check('interval: set to 2500ms reflects in GetInterval', Svc.GetInterval = 2500);
+
     // --- system snapshot ---
     Snap := Svc.CollectSnapshot;
     Check('snapshot: CPU in [0..100]', (Snap.CpuUsagePercent >= 0) and (Snap.CpuUsagePercent <= 100));
@@ -304,6 +312,10 @@ begin
         Check('vm: services view populated', VM.Services.Count > 0);
         VM.SetServiceStatusFilter(1); // Running
         Check('vm: services running filter applied', VM.Services.Count > 0);
+
+        Check('vm: default interval is 1500ms', VM.PollingIntervalMs = 1500);
+        VM.SetPollingInterval(500);
+        Check('vm: set interval to 500ms', VM.PollingIntervalMs = 500);
       finally
         VM.Free;
       end;

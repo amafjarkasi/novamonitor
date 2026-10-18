@@ -43,6 +43,7 @@ type
     /// Interrupts the inter-poll wait so the thread terminates promptly
     /// </summary>
     procedure StopPolling;
+    property IntervalMs: Cardinal read FIntervalMs write FIntervalMs;
   end;
 
   TProcessMeta = record
@@ -57,6 +58,7 @@ type
   TMetricsService = class(TInterfacedObject, IMetricsService)
   private
     FWorker: TMetricsWorkerThread;
+    FIntervalMs: Cardinal;
     FLock: TCriticalSection;
     FPrevIdleTime: Int64;
     FPrevKernelTime: Int64;
@@ -79,6 +81,8 @@ type
       const OnProcessUpdate: TProcessListUpdateEvent);
     procedure StopMonitoring;
     function IsMonitoring: Boolean;
+    procedure SetInterval(const AIntervalMs: Cardinal);
+    function GetInterval: Cardinal;
     function CollectSnapshot: TSystemMetrics;
     function CollectProcesses: TProcessList;
     function CollectNetworkConnections: TNetworkConnectionList;
@@ -181,6 +185,7 @@ begin
   FProcMetaCache := TDictionary<Cardinal, TProcessMeta>.Create;
   FHasPrevProcSample := False;
   FPrevProcTotalTime := 0;
+  FIntervalMs := 1500;
 end;
 
 destructor TMetricsService.Destroy;
@@ -651,6 +656,7 @@ procedure TMetricsService.StartMonitoring(const AIntervalMs: Cardinal;
   const OnProcessUpdate: TProcessListUpdateEvent);
 begin
   if IsMonitoring then Exit;
+  FIntervalMs := AIntervalMs;
   FWorker := TMetricsWorkerThread.Create(Self, AIntervalMs, OnUpdate, OnProcessUpdate);
 end;
 
@@ -669,6 +675,18 @@ end;
 function TMetricsService.IsMonitoring: Boolean;
 begin
   Result := Assigned(FWorker);
+end;
+
+procedure TMetricsService.SetInterval(const AIntervalMs: Cardinal);
+begin
+  FIntervalMs := AIntervalMs;
+  if Assigned(FWorker) then
+    FWorker.IntervalMs := AIntervalMs;
+end;
+
+function TMetricsService.GetInterval: Cardinal;
+begin
+  Result := FIntervalMs;
 end;
 
 function TMetricsService.TerminateProcessById(const AProcessId: Cardinal): Boolean;
