@@ -13,33 +13,25 @@
       <stop offset="100%" stop-color="#04060a"/>
     </linearGradient>
 
-    <!-- Blade Gradients -->
-    <linearGradient id="bladeLeft" x1="0%" y1="0%" x2="100%" y2="100%">
+    <!-- Clean Geometric Monogram Gradients -->
+    <linearGradient id="iconLeft" x1="0%" y1="0%" x2="0%" y2="100%">
       <stop offset="0%" stop-color="#38bdf8"/>
-      <stop offset="100%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#0284c7"/>
     </linearGradient>
 
-    <linearGradient id="bladeCenter" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#60a5fa"/>
-      <stop offset="50%" stop-color="#818cf8"/>
-      <stop offset="100%" stop-color="#a855f7"/>
+    <linearGradient id="iconDiag" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="50%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
     </linearGradient>
 
-    <linearGradient id="bladeRight" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#818cf8"/>
-      <stop offset="100%" stop-color="#4f46e5"/>
+    <linearGradient id="iconRight" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#a855f7"/>
+      <stop offset="100%" stop-color="#6366f1"/>
     </linearGradient>
 
     <filter id="coreGlow" x="-30%" y="-30%" width="160%" height="160%">
       <feGaussianBlur stdDeviation="16" result="blur"/>
-      <feMerge>
-        <feMergeNode in="blur"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
-
-    <filter id="sparkGlow" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur stdDeviation="6" result="blur"/>
       <feMerge>
         <feMergeNode in="blur"/>
         <feMergeNode in="SourceGraphic"/>
@@ -56,33 +48,25 @@
     <!-- Ambient Halo -->
     <circle cx="0" cy="0" r="160" fill="#38bdf8" fill-opacity="0.08" filter="url(#coreGlow)"/>
 
-    <!-- Precision Rings -->
-    <circle cx="0" cy="0" r="170" stroke="#334155" stroke-width="1.5" stroke-dasharray="4 10" opacity="0.6"/>
-    <circle cx="0" cy="0" r="145" stroke="#1e293b" stroke-width="2" opacity="0.9"/>
+    <!-- Precision Concentric Rings -->
+    <circle cx="0" cy="0" r="172" stroke="#334155" stroke-width="1.5" stroke-dasharray="4 10" opacity="0.6"/>
+    <circle cx="0" cy="0" r="148" stroke="#1e293b" stroke-width="2" opacity="0.9"/>
     
     <!-- Reticle Ticks -->
-    <line x1="0" y1="-175" x2="0" y2="-155" stroke="#38bdf8" stroke-width="2.5" opacity="0.8"/>
-    <line x1="0" y1="155" x2="0" y2="175" stroke="#38bdf8" stroke-width="2.5" opacity="0.8"/>
-    <line x1="-175" y1="0" x2="-155" y2="0" stroke="#38bdf8" stroke-width="2.5" opacity="0.8"/>
-    <line x1="155" y1="0" x2="175" y2="0" stroke="#38bdf8" stroke-width="2.5" opacity="0.8"/>
+    <line x1="0" y1="-178" x2="0" y2="-158" stroke="#38bdf8" stroke-width="2.5" opacity="0.8"/>
+    <line x1="0" y1="158" x2="0" y2="178" stroke="#38bdf8" stroke-width="2.5" opacity="0.8"/>
+    <line x1="-178" y1="0" x2="-158" y2="0" stroke="#38bdf8" stroke-width="2.5" opacity="0.8"/>
+    <line x1="158" y1="0" x2="178" y2="0" stroke="#38bdf8" stroke-width="2.5" opacity="0.8"/>
 
-    <!-- Prismatic "N" -->
-    <!-- Left Pillar -->
-    <path d="M -90 100 L -90 -80 C -90 -91 -81 -100 -70 -100 L -50 -100 C -39 -100 -30 -91 -30 -80 L -30 100 C -30 111 -39 120 -50 120 L -70 120 C -81 120 -90 111 -90 100 Z"
-          fill="url(#bladeLeft)"/>
+    <!-- Geometric "N" Monogram -->
+    <!-- Left Vertical Column -->
+    <rect x="-92" y="-105" width="50" height="210" rx="14" fill="url(#iconLeft)"/>
 
-    <!-- Right Pillar -->
-    <path d="M 30 100 L 30 -80 C 30 -91 39 -100 50 -100 L 70 -100 C 81 -100 90 -91 90 -80 L 90 100 C 90 111 81 120 70 120 L 50 120 C 39 120 30 111 30 100 Z"
-          fill="url(#bladeRight)"/>
+    <!-- Right Vertical Column -->
+    <rect x="42" y="-105" width="50" height="210" rx="14" fill="url(#iconRight)"/>
 
-    <!-- Diagonal Traverse -->
-    <path d="M -75 -84 L 70 85 C 78 95 72 108 59 108 L 32 108 C 24 108 17 103 12 96 L -75 2 Z"
-          fill="url(#bladeCenter)" opacity="0.95"/>
-
-    <!-- Core Nova Flare Spark -->
-    <g transform="translate(0, 0)" filter="url(#sparkGlow)">
-      <path d="M 0 -44 L 6 -8 L 42 0 L 6 8 L 0 44 L -6 8 L -42 0 L -6 -8 Z" fill="#ffffff"/>
-      <circle cx="0" cy="0" r="7" fill="#38bdf8"/>
-    </g>
+    <!-- Diagonal Traverse (Smooth Precision Blade) -->
+    <path d="M -92 -92 C -92 -99 -85 -105 -77 -105 L -45 -105 C -38 -105 -31 -101 -28 -95 L 77 92 C 81 99 76 108 67 108 L 35 108 C 28 108 21 104 18 98 L -87 -89 C -90 -94 -92 -98 -92 -92 Z"
+          fill="url(#iconDiag)"/>
   </g>
 </svg>

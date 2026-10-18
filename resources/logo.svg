@@ -14,21 +14,21 @@
       <stop offset="100%" stop-color="#030407"/>
     </linearGradient>
 
-    <!-- Icon Blade Gradients -->
-    <linearGradient id="bladeLeft" x1="0%" y1="0%" x2="100%" y2="100%">
+    <!-- Clean Geometric Monogram Gradients -->
+    <linearGradient id="nLeft" x1="0%" y1="0%" x2="0%" y2="100%">
       <stop offset="0%" stop-color="#38bdf8"/>
-      <stop offset="100%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#0284c7"/>
     </linearGradient>
 
-    <linearGradient id="bladeCenter" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#60a5fa"/>
-      <stop offset="50%" stop-color="#818cf8"/>
-      <stop offset="100%" stop-color="#a855f7"/>
+    <linearGradient id="nDiag" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="50%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
     </linearGradient>
 
-    <linearGradient id="bladeRight" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#818cf8"/>
-      <stop offset="100%" stop-color="#4f46e5"/>
+    <linearGradient id="nRight" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#a855f7"/>
+      <stop offset="100%" stop-color="#6366f1"/>
     </linearGradient>
 
     <linearGradient id="accentLine" x1="0%" y1="0%" x2="100%" y2="0%">
@@ -44,18 +44,11 @@
 
     <!-- Soft Glow Filter -->
     <filter id="coreGlow" x="-30%" y="-30%" width="160%" height="160%">
-      <feGaussianBlur stdDeviation="10" result="blur1"/>
-      <feGaussianBlur stdDeviation="25" result="blur2"/>
+      <feGaussianBlur stdDeviation="12" result="blur"/>
       <feMerge>
-        <feMergeNode in="blur2"/>
-        <feMergeNode in="blur1"/>
+        <feMergeNode in="blur"/>
         <feMergeNode in="SourceGraphic"/>
       </feMerge>
-    </filter>
-
-    <filter id="subtleGlow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="4" result="blur"/>
-      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
     </filter>
   </defs>
 
@@ -63,40 +56,31 @@
   <rect width="1000" height="300" rx="20" fill="url(#bgFill)" stroke="#1e2230" stroke-width="1.2"/>
   <rect width="1000" height="300" rx="20" fill="url(#ambientGlow)"/>
 
-  <!-- ==================== ICON MARK (Stylized Faceted Nova "N") ==================== -->
+  <!-- ==================== ICON MARK (Pure Geometric "N") ==================== -->
   <g transform="translate(110, 65)">
     <!-- Ambient Halo behind Icon -->
     <circle cx="85" cy="85" r="95" fill="#38bdf8" fill-opacity="0.08" filter="url(#coreGlow)"/>
 
     <!-- Concentric Technical Aperture Rings -->
-    <circle cx="85" cy="85" r="80" stroke="#334155" stroke-width="1" stroke-dasharray="2 6" opacity="0.6"/>
+    <circle cx="85" cy="85" r="82" stroke="#334155" stroke-width="1" stroke-dasharray="2 6" opacity="0.6"/>
     <circle cx="85" cy="85" r="70" stroke="#1e293b" stroke-width="1.5" opacity="0.8"/>
     
-    <!-- Coordinate Tick Marks -->
+    <!-- Precision Coordinate Ticks -->
     <line x1="85" y1="2" x2="85" y2="10" stroke="#38bdf8" stroke-width="1.5" opacity="0.7"/>
     <line x1="85" y1="160" x2="85" y2="168" stroke="#38bdf8" stroke-width="1.5" opacity="0.7"/>
     <line x1="2" y1="85" x2="10" y2="85" stroke="#38bdf8" stroke-width="1.5" opacity="0.7"/>
     <line x1="160" y1="85" x2="168" y2="85" stroke="#38bdf8" stroke-width="1.5" opacity="0.7"/>
 
-    <!-- Main Emblem: Isometric Prismatic "N" with Nova Energy Wave -->
-    <!-- Left Pillar -->
-    <path d="M 44 135 L 44 45 C 44 39.5 48.5 35 54 35 L 64 35 C 69.5 35 74 39.5 74 45 L 74 135 C 74 140.5 69.5 145 64 145 L 54 145 C 48.5 145 44 140.5 44 135 Z"
-          fill="url(#bladeLeft)" />
+    <!-- Architectural "N" Monogram -->
+    <!-- Left Vertical Column -->
+    <rect x="42" y="35" width="24" height="100" rx="6" fill="url(#nLeft)" />
 
-    <!-- Right Pillar -->
-    <path d="M 96 135 L 96 45 C 96 39.5 100.5 35 106 35 L 116 35 C 121.5 35 126 39.5 126 45 L 126 135 C 126 140.5 121.5 145 116 145 L 106 145 C 100.5 145 96 140.5 96 135 Z"
-          fill="url(#bladeRight)" />
+    <!-- Right Vertical Column -->
+    <rect x="104" y="35" width="24" height="100" rx="6" fill="url(#nRight)" />
 
-    <!-- Dynamic Diagonal Energy Traverse (Faceted Prism) -->
-    <path d="M 52 42 L 118 128 C 122 133 118.5 140 112 140 L 98 140 C 94 140 90.5 137.5 88 134 L 52 88 Z"
-          fill="url(#bladeCenter)" filter="url(#subtleGlow)" opacity="0.95"/>
-
-    <!-- Nova Star Burst / Core Spark -->
-    <g transform="translate(85, 85)" filter="url(#subtleGlow)">
-      <!-- 4-point Diamond Flare -->
-      <path d="M 0 -22 L 3 -4 L 21 0 L 3 4 L 0 22 L -3 4 L -21 0 L -3 -4 Z" fill="#ffffff"/>
-      <circle cx="0" cy="0" r="3.5" fill="#38bdf8"/>
-    </g>
+    <!-- Diagonal Traverse (Smooth Geometric Blade) -->
+    <path d="M 42 41 C 42 37.5 45 35 48.5 35 L 64 35 C 67.5 35 70.5 36.8 72 39.8 L 122 129 C 124 132.5 121.5 137 117.5 137 L 102 137 C 98.5 137 95.5 135.2 94 132.2 L 44 43 C 42.8 40.8 42 38.5 42 41 Z"
+          fill="url(#nDiag)"/>
   </g>
 
   <!-- ==================== TYPOGRAPHY & BRAND IDENTITY ==================== -->
