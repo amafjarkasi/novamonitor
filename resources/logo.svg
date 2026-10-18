@@ -1,90 +1,138 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 240" width="100%" height="100%">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 300" width="100%" height="100%" fill="none">
   <defs>
-    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0f172a"/>
-      <stop offset="50%" stop-color="#1e1b4b"/>
-      <stop offset="100%" stop-color="#0f172a"/>
+    <!-- Background Vignette -->
+    <radialGradient id="ambientGlow" cx="24%" cy="50%" r="65%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.16"/>
+      <stop offset="45%" stop-color="#6366f1" stop-opacity="0.10"/>
+      <stop offset="75%" stop-color="#a855f7" stop-opacity="0.04"/>
+      <stop offset="100%" stop-color="#030712" stop-opacity="0"/>
+    </radialGradient>
+
+    <linearGradient id="bgFill" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0a0c14"/>
+      <stop offset="50%" stop-color="#06080e"/>
+      <stop offset="100%" stop-color="#030407"/>
     </linearGradient>
-    <linearGradient id="glowGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+
+    <!-- Icon Blade Gradients -->
+    <linearGradient id="bladeLeft" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+
+    <linearGradient id="bladeCenter" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#60a5fa"/>
       <stop offset="50%" stop-color="#818cf8"/>
-      <stop offset="100%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#a855f7"/>
     </linearGradient>
-    <linearGradient id="pulseGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.1"/>
-      <stop offset="50%" stop-color="#818cf8" stop-opacity="0.8"/>
-      <stop offset="100%" stop-color="#34d399" stop-opacity="0.1"/>
+
+    <linearGradient id="bladeRight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#818cf8"/>
+      <stop offset="100%" stop-color="#4f46e5"/>
     </linearGradient>
-    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="6" result="blur" />
-      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+
+    <linearGradient id="accentLine" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.9"/>
+      <stop offset="50%" stop-color="#818cf8" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#34d399" stop-opacity="0"/>
+    </linearGradient>
+
+    <linearGradient id="textGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#cbd5e1"/>
+    </linearGradient>
+
+    <!-- Soft Glow Filter -->
+    <filter id="coreGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="10" result="blur1"/>
+      <feGaussianBlur stdDeviation="25" result="blur2"/>
+      <feMerge>
+        <feMergeNode in="blur2"/>
+        <feMergeNode in="blur1"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="subtleGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
     </filter>
   </defs>
 
-  <!-- Background Card -->
-  <rect x="0" y="0" width="900" height="240" rx="16" fill="url(#bgGrad)" stroke="#334155" stroke-width="1.5"/>
+  <!-- Container Box -->
+  <rect width="1000" height="300" rx="20" fill="url(#bgFill)" stroke="#1e2230" stroke-width="1.2"/>
+  <rect width="1000" height="300" rx="20" fill="url(#ambientGlow)"/>
 
-  <!-- Subtle Grid Lines -->
-  <g stroke="#1e293b" stroke-width="1" opacity="0.4">
-    <line x1="40" y1="60" x2="860" y2="60" />
-    <line x1="40" y1="120" x2="860" y2="120" />
-    <line x1="40" y1="180" x2="860" y2="180" />
-    <line x1="160" y1="20" x2="160" y2="220" />
-    <line x1="360" y1="20" x2="360" y2="220" />
-    <line x1="560" y1="20" x2="560" y2="220" />
-    <line x1="760" y1="20" x2="760" y2="220" />
+  <!-- ==================== ICON MARK (Stylized Faceted Nova "N") ==================== -->
+  <g transform="translate(110, 65)">
+    <!-- Ambient Halo behind Icon -->
+    <circle cx="85" cy="85" r="95" fill="#38bdf8" fill-opacity="0.08" filter="url(#coreGlow)"/>
+
+    <!-- Concentric Technical Aperture Rings -->
+    <circle cx="85" cy="85" r="80" stroke="#334155" stroke-width="1" stroke-dasharray="2 6" opacity="0.6"/>
+    <circle cx="85" cy="85" r="70" stroke="#1e293b" stroke-width="1.5" opacity="0.8"/>
+    
+    <!-- Coordinate Tick Marks -->
+    <line x1="85" y1="2" x2="85" y2="10" stroke="#38bdf8" stroke-width="1.5" opacity="0.7"/>
+    <line x1="85" y1="160" x2="85" y2="168" stroke="#38bdf8" stroke-width="1.5" opacity="0.7"/>
+    <line x1="2" y1="85" x2="10" y2="85" stroke="#38bdf8" stroke-width="1.5" opacity="0.7"/>
+    <line x1="160" y1="85" x2="168" y2="85" stroke="#38bdf8" stroke-width="1.5" opacity="0.7"/>
+
+    <!-- Main Emblem: Isometric Prismatic "N" with Nova Energy Wave -->
+    <!-- Left Pillar -->
+    <path d="M 44 135 L 44 45 C 44 39.5 48.5 35 54 35 L 64 35 C 69.5 35 74 39.5 74 45 L 74 135 C 74 140.5 69.5 145 64 145 L 54 145 C 48.5 145 44 140.5 44 135 Z"
+          fill="url(#bladeLeft)" />
+
+    <!-- Right Pillar -->
+    <path d="M 96 135 L 96 45 C 96 39.5 100.5 35 106 35 L 116 35 C 121.5 35 126 39.5 126 45 L 126 135 C 126 140.5 121.5 145 116 145 L 106 145 C 100.5 145 96 140.5 96 135 Z"
+          fill="url(#bladeRight)" />
+
+    <!-- Dynamic Diagonal Energy Traverse (Faceted Prism) -->
+    <path d="M 52 42 L 118 128 C 122 133 118.5 140 112 140 L 98 140 C 94 140 90.5 137.5 88 134 L 52 88 Z"
+          fill="url(#bladeCenter)" filter="url(#subtleGlow)" opacity="0.95"/>
+
+    <!-- Nova Star Burst / Core Spark -->
+    <g transform="translate(85, 85)" filter="url(#subtleGlow)">
+      <!-- 4-point Diamond Flare -->
+      <path d="M 0 -22 L 3 -4 L 21 0 L 3 4 L 0 22 L -3 4 L -21 0 L -3 -4 Z" fill="#ffffff"/>
+      <circle cx="0" cy="0" r="3.5" fill="#38bdf8"/>
+    </g>
   </g>
 
-  <!-- Telemetry Pulse Waveform in Background -->
-  <path d="M 40 140 L 120 140 L 140 110 L 160 170 L 180 120 L 200 140 L 280 140 L 300 90 L 320 180 L 340 130 L 360 140 L 860 140"
-        fill="none" stroke="url(#pulseGrad)" stroke-width="2.5" />
+  <!-- ==================== TYPOGRAPHY & BRAND IDENTITY ==================== -->
+  <g transform="translate(340, 95)">
+    <!-- Brand Title -->
+    <text x="0" y="55" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif">
+      <tspan font-size="56" font-weight="800" letter-spacing="4" fill="url(#textGrad)">NOVA</tspan>
+      <tspan dx="12" font-size="56" font-weight="300" letter-spacing="6" fill="#38bdf8">MONITOR</tspan>
+    </text>
 
-  <!-- Logo Icon Container -->
-  <g transform="translate(60, 48)">
-    <!-- Outer Hexagon / Shield -->
-    <rect x="0" y="0" width="144" height="144" rx="28" fill="#1e293b" stroke="#38bdf8" stroke-width="2" filter="url(#glow)"/>
-    <rect x="6" y="6" width="132" height="132" rx="24" fill="#090d16" opacity="0.8"/>
-    
-    <!-- Orbital Rings -->
-    <circle cx="72" cy="72" r="48" fill="none" stroke="#475569" stroke-dasharray="4 4" stroke-width="1.5" />
-    <circle cx="72" cy="72" r="32" fill="none" stroke="#6366f1" stroke-width="1.5" opacity="0.6"/>
+    <!-- Hairline Accent Divider with Gradient -->
+    <rect x="2" y="74" width="550" height="1.5" fill="url(#accentLine)"/>
 
-    <!-- Pulse Line in Icon -->
-    <path d="M 24 72 L 48 72 L 60 44 L 76 100 L 88 62 L 96 72 L 120 72"
-          fill="none" stroke="url(#glowGrad)" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
-    
-    <!-- Core Spark / Glowing Node -->
-    <circle cx="76" cy="100" r="4" fill="#38bdf8" filter="url(#glow)"/>
-    <circle cx="60" cy="44" r="3" fill="#34d399"/>
-  </g>
+    <!-- Subtitle / Meta Hierarchy -->
+    <text x="3" y="102" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif"
+          font-size="12" font-weight="600" letter-spacing="4" fill="#94a3b8">
+      SYSTEM TELEMETRY ENGINE <tspan fill="#38bdf8">•</tspan> DELPHI &amp; FREE PASCAL
+    </text>
 
-  <!-- Typography & Branding -->
-  <g transform="translate(240, 75)">
-    <!-- Main Title -->
-    <text x="0" y="38" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
-          font-size="44" font-weight="900" letter-spacing="4" fill="url(#glowGrad)">NOVA<tspan fill="#f8fafc">MONITOR</tspan></text>
-    
-    <!-- Subtitle / Tagline -->
-    <text x="2" y="70" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
-          font-size="14" font-weight="700" letter-spacing="3" fill="#94a3b8">PROFESSIONAL SYSTEM TELEMETRY SUITE</text>
+    <!-- Spec Pill Tags (Clean Minimalist Chips) -->
+    <g transform="translate(3, 122)">
+      <!-- Pill 1: MVVM -->
+      <rect x="0" y="0" width="76" height="22" rx="11" fill="#111827" stroke="#1f293d" stroke-width="1"/>
+      <text x="38" y="15" font-family="'Segoe UI', sans-serif" font-size="10.5" font-weight="700" fill="#94a3b8" text-anchor="middle" letter-spacing="1">MVVM</text>
 
-    <!-- Badges / Tags -->
-    <g transform="translate(2, 92)">
-      <!-- Delphi / Free Pascal Badge -->
-      <rect x="0" y="0" width="120" height="26" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1"/>
-      <text x="60" y="17" font-family="'Segoe UI', sans-serif" font-size="11" font-weight="700" fill="#38bdf8" text-anchor="middle">DELPHI &amp; FPC</text>
+      <!-- Pill 2: High-DPI v2 -->
+      <rect x="86" y="0" width="104" height="22" rx="11" fill="#111827" stroke="#1f293d" stroke-width="1"/>
+      <text x="138" y="15" font-family="'Segoe UI', sans-serif" font-size="10.5" font-weight="700" fill="#38bdf8" text-anchor="middle" letter-spacing="1">HIGH-DPI v2</text>
 
-      <!-- MVVM Badge -->
-      <rect x="130" y="0" width="90" height="26" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1"/>
-      <text x="175" y="17" font-family="'Segoe UI', sans-serif" font-size="11" font-weight="700" fill="#a78bfa" text-anchor="middle">MVVM / VCL</text>
+      <!-- Pill 3: Win64 Native -->
+      <rect x="200" y="0" width="112" height="22" rx="11" fill="#111827" stroke="#1f293d" stroke-width="1"/>
+      <text x="256" y="15" font-family="'Segoe UI', sans-serif" font-size="10.5" font-weight="700" fill="#34d399" text-anchor="middle" letter-spacing="1">WIN64 NATIVE</text>
 
-      <!-- High-DPI Badge -->
-      <rect x="230" y="0" width="115" height="26" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1"/>
-      <text x="287" y="17" font-family="'Segoe UI', sans-serif" font-size="11" font-weight="700" fill="#34d399" text-anchor="middle">HIGH-DPI PER-MON</text>
-
-      <!-- Win64 Native Badge -->
-      <rect x="355" y="0" width="95" height="26" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1"/>
-      <text x="402" y="17" font-family="'Segoe UI', sans-serif" font-size="11" font-weight="700" fill="#facc15" text-anchor="middle">WIN64 NATIVE</text>
+      <!-- Pill 4: Zero Latency -->
+      <rect x="322" y="0" width="106" height="22" rx="11" fill="#111827" stroke="#1f293d" stroke-width="1"/>
+      <text x="375" y="15" font-family="'Segoe UI', sans-serif" font-size="10.5" font-weight="700" fill="#a78bfa" text-anchor="middle" letter-spacing="1">ASYNC 15ms</text>
     </g>
   </g>
 </svg>
