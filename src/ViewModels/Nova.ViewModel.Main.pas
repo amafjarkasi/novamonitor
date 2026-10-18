@@ -31,6 +31,7 @@ type
     FThemeColors: TThemeColors;
     FCpuHistory: THistoryBuffer;
     FRamHistory: THistoryBuffer;
+    FVitalityHistory: THistoryBuffer;
     FFilterMode: TProcessFilterMode;
     FTreeViewEnabled: Boolean;
     FActiveView: TAppView;
@@ -103,6 +104,7 @@ type
     property PollingIntervalMs: Cardinal read FPollingIntervalMs;
     property CpuHistory: THistoryBuffer read FCpuHistory;
     property RamHistory: THistoryBuffer read FRamHistory;
+    property VitalityHistory: THistoryBuffer read FVitalityHistory;
 
     property OnMetricsUpdated: TMetricsUpdateEvent read FOnMetricsUpdated write FOnMetricsUpdated;
     property OnProcessesUpdated: TProcessListUpdateEvent read FOnProcessesUpdated write FOnProcessesUpdated;
@@ -145,6 +147,7 @@ begin
   FActiveView := avDashboard;
   FCpuHistory.Clear;
   FRamHistory.Clear;
+  FVitalityHistory.Clear;
   FCurrentTheme := atDark;
   FThemeColors := TUIUtils.GetThemeColors(FCurrentTheme);
   FLatestMetrics := TSystemMetrics.CreateEmpty;
@@ -175,10 +178,17 @@ begin
 end;
 
 procedure TMainViewModel.Initialize;
+var
+  RamPct: Single;
 begin
   FLatestMetrics := FMetricsService.CollectSnapshot;
   FCpuHistory.Add(FLatestMetrics.CpuUsagePercent);
-  FRamHistory.Add(FLatestMetrics.MemoryLoadPercent);
+  if FLatestMetrics.TotalPhysicalMB > 0 then
+    RamPct := (FLatestMetrics.UsedPhysicalMB * 100.0) / FLatestMetrics.TotalPhysicalMB
+  else
+    RamPct := Single(FLatestMetrics.MemoryLoadPercent);
+  FRamHistory.Add(RamPct);
+  FVitalityHistory.Add(100.0 - (FLatestMetrics.CpuUsagePercent * 0.15));
 
   FProcesses.Free;
   FProcesses := FMetricsService.CollectProcesses;
@@ -518,10 +528,18 @@ begin
 end;
 
 procedure TMainViewModel.HandleMetricsUpdate(const AMetrics: TSystemMetrics);
+var
+  RamPct: Single;
 begin
   FLatestMetrics := AMetrics;
   FCpuHistory.Add(AMetrics.CpuUsagePercent);
-  FRamHistory.Add(AMetrics.MemoryLoadPercent);
+  if AMetrics.TotalPhysicalMB > 0 then
+    RamPct := (AMetrics.UsedPhysicalMB * 100.0) / AMetrics.TotalPhysicalMB
+  else
+    RamPct := Single(AMetrics.MemoryLoadPercent);
+  FRamHistory.Add(RamPct);
+  FVitalityHistory.Add(100.0 - (AMetrics.CpuUsagePercent * 0.15));
+
   if Assigned(FOnMetricsUpdated) then
     FOnMetricsUpdated(FLatestMetrics);
 end;

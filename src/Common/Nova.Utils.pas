@@ -551,13 +551,28 @@ begin
   H := ARect.Bottom - ARect.Top;
   if (W <= 4) or (H <= 4) then Exit;
 
-  MaxVal := 20.0; // Dynamic scaling with 20% floor so low usage shows peaks
-  MinVal := 0.0;
-  for I := 0 to N - 1 do
+  MaxVal := AValues[0];
+  MinVal := AValues[0];
+  for I := 1 to N - 1 do
   begin
-    if AValues[I] > MaxVal then
-      MaxVal := AValues[I];
+    if AValues[I] > MaxVal then MaxVal := AValues[I];
+    if AValues[I] < MinVal then MinVal := AValues[I];
   end;
+
+  // Responsive scaling: if range is narrow (e.g. RAM fluctuations < 4%),
+  // focus the window around the mean so subtle telemetry shifts are clearly visible
+  if (MaxVal - MinVal) < 4.0 then
+  begin
+    Normalized := (MaxVal + MinVal) / 2.0;
+    MinVal := Normalized - 2.0;
+    MaxVal := Normalized + 2.0;
+  end
+  else
+  begin
+    if MinVal > 0.0 then MinVal := 0.0;
+    if MaxVal < 20.0 then MaxVal := 20.0; // Baseline floor for low usage
+  end;
+  if MinVal < 0.0 then MinVal := 0.0;
   if MaxVal > 100.0 then MaxVal := 100.0;
   if MaxVal <= MinVal then MaxVal := MinVal + 1.0;
 

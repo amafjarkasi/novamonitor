@@ -110,6 +110,8 @@ type
     FActiveView: TAppView;
     FContextMenu: TPopupMenu;
 
+    lblTray: TLabel;
+    imgHeaderLogo: TImage;
     cmbInterval: TComboBox;
     btnPinWindow: TButton;
     btnFilterAll: TButton;
@@ -187,6 +189,8 @@ type
     procedure btnSvcFilterRunningClick(Sender: TObject);
     procedure btnSvcFilterStoppedClick(Sender: TObject);
     procedure cmbIntervalChange(Sender: TObject);
+    procedure lblTrayClick(Sender: TObject);
+    procedure LoadHeaderLogo;
 
     procedure AppMinimize(Sender: TObject);
     procedure TrayIconClick(Sender: TObject);
@@ -277,6 +281,15 @@ begin
   lvProcesses.OwnerData := True;
   lvProcesses.OnData := lvProcessesData;
 
+  // Header Logo & Page Title
+  imgHeaderLogo := TImage.Create(Self);
+  imgHeaderLogo.Parent := pnlHeader;
+  imgHeaderLogo.SetBounds(22, 16, 32, 32);
+  imgHeaderLogo.Stretch := True;
+  imgHeaderLogo.Proportional := True;
+  LoadHeaderLogo;
+  lblPageTitle.SetBounds(62, 18, 260, 28);
+
   // Configure Header Actions (Search, Polling Interval, Pin, Pause/Resume, Export)
   pnlHeaderActions.Width := 600;
 
@@ -286,6 +299,9 @@ begin
   cmbInterval := TComboBox.Create(Self);
   cmbInterval.Parent := pnlHeaderActions;
   cmbInterval.Style := csDropDownList;
+  cmbInterval.AutoSize := False;
+  cmbInterval.ItemHeight := 20;
+  cmbInterval.Font.Size := 9;
   cmbInterval.SetBounds(214, 18, 110, 28);
   cmbInterval.Items.Add('0.5s (Fast)');
   cmbInterval.Items.Add('1.0s');
@@ -307,6 +323,20 @@ begin
 
   btnToggleMonitor.SetBounds(394, 18, 88, 28);
   btnExportSnapshot.SetBounds(490, 18, 94, 28);
+
+  // Minimize-to-tray: decoupling caption to TLabel eliminates Win32 UXTheme dark-panel text bug
+  chkTray.Caption := '';
+  chkTray.SetBounds(20, 8, 20, 20);
+
+  lblTray := TLabel.Create(Self);
+  lblTray.Parent := pnlNavBottom;
+  lblTray.SetBounds(44, 9, 150, 18);
+  lblTray.Caption := 'Minimize to tray';
+  lblTray.Font.Name := 'Segoe UI';
+  lblTray.Font.Size := 9;
+  lblTray.Font.Style := [fsBold];
+  lblTray.Cursor := crHandPoint;
+  lblTray.OnClick := lblTrayClick;
 
   // Sidebar navigation: Network and Services tabs
   btnNavNetwork := TButton.Create(Self);
@@ -1051,8 +1081,12 @@ begin
   lvProcesses.Color := AColors.Surface;
   lvProcesses.Font.Color := AColors.TextPrimary;
 
-  chkTray.Font.Color := AColors.SidebarText;
-  chkTray.Font.Style := [fsBold];
+  chkTray.Color := AColors.SidebarBg;
+  if Assigned(lblTray) then
+  begin
+    lblTray.Font.Color := AColors.SidebarText;
+    lblTray.Font.Style := [fsBold];
+  end;
 
   pnlFooter.Color := AColors.Surface;
   lblFooterStatus.Font.Color := AColors.TextSecondary;
@@ -1291,12 +1325,27 @@ end;
 procedure TMainForm.pbCardRamPaint(Sender: TObject);
 var
   M: TSystemMetrics;
+  RamPct: Single;
+  BarColor: TColor;
 begin
   M := FViewModel.LatestMetrics;
+  if M.TotalPhysicalMB > 0 then
+    RamPct := (M.UsedPhysicalMB * 100.0) / M.TotalPhysicalMB
+  else
+    RamPct := Single(M.MemoryLoadPercent);
+
+  // Dynamic status color matching memory pressure
+  if RamPct >= 85.0 then
+    BarColor := FColors.Danger
+  else if RamPct >= 70.0 then
+    BarColor := FColors.Warning
+  else
+    BarColor := FColors.Accent;
+
   DrawMetricCard(pbCardRam, 'MEMORY LOAD',
-    Format('%d%% (%s)', [M.MemoryLoadPercent, TUIUtils.FormatMegabytes(M.UsedPhysicalMB)]),
-    Format('%s free / %s total', [TUIUtils.FormatMegabytes(M.AvailablePhysicalMB), TUIUtils.FormatMegabytes(M.TotalPhysicalMB)]),
-    M.MemoryLoadPercent, FColors.Accent, FViewModel.RamHistory.ToArray);
+    Format('%.1f%% (%s)', [RamPct, TUIUtils.FormatMegabytes(M.UsedPhysicalMB)]),
+    Format('%s free of %s', [TUIUtils.FormatMegabytes(M.AvailablePhysicalMB), TUIUtils.FormatMegabytes(M.TotalPhysicalMB)]),
+    RamPct, BarColor, FViewModel.RamHistory.ToArray);
 end;
 
 procedure TMainForm.pbCardDiskPaint(Sender: TObject);
@@ -1317,8 +1366,8 @@ begin
   M := FViewModel.LatestMetrics;
   DrawMetricCard(pbCardUptime, 'SYSTEM UPTIME',
     TUIUtils.FormatDuration(M.UptimeSeconds),
-    Format('%d active processes', [M.ActiveProcessCount]),
-    -1, FColors.Accent, nil);
+    Format('%d active | %d threads', [M.ActiveProcessCount, M.ThreadCount]),
+    100.0, FColors.Success, FViewModel.VitalityHistory.ToArray);
 end;
 
 procedure TMainForm.btnToggleMonitorClick(Sender: TObject);
@@ -1596,6 +1645,30 @@ begin
     IntervalMs := 1500;
   end;
   FViewModel.SetPollingInterval(IntervalMs);
+end;
+
+procedure TMainForm.lblTrayClick(Sender: TObject);
+begin
+  chkTray.Checked := not chkTray.Checked;
+end;
+
+procedure TMainForm.LoadHeaderLogo;
+var
+  AppDir, LogoPath: string;
+begin
+  AppDir := ExtractFilePath(ParamStr(0));
+  LogoPath := AppDir + 'resources' + PathDelim + 'header_logo_32.png';
+  if not FileExists(LogoPath) then
+    LogoPath := AppDir + 'resources' + PathDelim + 'header_logo_cropped.png';
+  if not FileExists(LogoPath) then
+    LogoPath := AppDir + '..' + PathDelim + '..' + PathDelim + 'resources' + PathDelim + 'header_logo_32.png';
+  if FileExists(LogoPath) then
+  begin
+    try
+      imgHeaderLogo.Picture.LoadFromFile(LogoPath);
+    except
+    end;
+  end;
 end;
 
 end.
