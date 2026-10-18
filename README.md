@@ -6,7 +6,7 @@
   <a href="#-feature-breakdown"><img src="https://img.shields.io/badge/Architecture-MVVM%20%7C%20Clean-6366f1?style=for-the-badge" alt="Architecture" /></a>
   <a href="#-building--running"><img src="https://img.shields.io/badge/Compiler-Delphi%20%7C%20Free%20Pascal%203.2.2-38bdf8?style=for-the-badge" alt="Compiler" /></a>
   <a href="#-performance--benchmarks"><img src="https://img.shields.io/badge/Scan%20Latency-15--31ms%20(340%2B%20Procs)-10b981?style=for-the-badge" alt="Scan Latency" /></a>
-  <a href="#-automated-testing"><img src="https://img.shields.io/badge/Tests-85%2F85%20Passing-34d399?style=for-the-badge" alt="Tests" /></a>
+  <a href="#-automated-testing"><img src="https://img.shields.io/badge/Tests-100%2F100%20Passing-34d399?style=for-the-badge" alt="Tests" /></a>
   <a href="#-fluent-desktop-ux--ergonomics"><img src="https://img.shields.io/badge/Display-Per--Monitor%20v2%20High--DPI-f59e0b?style=for-the-badge" alt="High-DPI" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-f43f5e?style=for-the-badge" alt="License" /></a>
 </p>
@@ -235,13 +235,13 @@ classDiagram
 | [`src/Services/Nova.Service.Exporter.pas`](src/Services/Nova.Service.Exporter.pas) | Structured JSON and tabular CSV report serialization |
 | [`src/ViewModels/Nova.ViewModel.Main.pas`](src/ViewModels/Nova.ViewModel.Main.pas) | Presentation state, 10-column QuickSort, parent-child tree builder, search/chip filtering, and service/process commands |
 | [`src/Views/Nova.View.Main.pas`](src/Views/Nova.View.Main.pas) | Main dashboard form, virtual `OwnerData` list callbacks, Process Inspector modal dialog, and DWM/UXTheme integration |
-| [`tests/novatest.lpr`](tests/novatest.lpr) | 74-assertion automated console test runner covering telemetry, sorting, security guards, GDI+, and exports |
+| [`tests/novatest.lpr`](tests/novatest.lpr) | 100-assertion automated console test runner covering telemetry, sorting, security guards, process control, GDI+, and exports |
 
 ---
 
 ## ⚡ Performance & Benchmarks
 
-NovaMonitor is engineered from the ground up to observe the system **without perturbing it**. Traditional Electron, WPF, or heavy GUI task managers often consume 150–400 MB of RAM and spike CPU usage during table sorts. NovaMonitor achieves sub-20ms full-system scans and near-zero idle footprint through five architectural optimizations:
+NovaMonitor is engineered from the ground up to observe the system **without perturbing it**. Traditional Electron, WPF, or heavy GUI task managers often consume 150–400 MB of RAM and spike CPU usage during table sorts. NovaMonitor achieves 15–31 ms full-system scans and near-zero idle footprint through five architectural optimizations:
 
 ### Measured Benchmark Comparison
 
@@ -251,10 +251,10 @@ NovaMonitor is engineered from the ground up to observe the system **without per
 | :--- | :--- | :--- | :--- |
 | **Cold Startup Time** | **~45 ms** | ~180 ms | 1,200 – 2,500 ms |
 | **Memory Working Set (RAM)** | **~11.4 MB** | ~38.0 MB | 180.0 – 420.0 MB |
-| **Full Scan Time (340+ Processes)** | **15 ms avg** (`15–16 ms`) | 25 – 40 ms | 85 – 220 ms |
+| **Full Scan Time (340+ Processes)** | **31 ms avg** (`15–31 ms`) | 25 – 40 ms | 85 – 220 ms |
 | **Table Sort Latency (340 Rows)** | **< 0.3 ms** (in-place QuickSort) | ~2.5 ms | 12 – 45 ms (DOM diffing) |
 | **UI Redraw CPU Overhead (1.5s tick)** | **< 0.15% CPU** | 0.5 – 1.2% CPU | 2.5 – 6.0% CPU |
-| **Standalone Binary Size** | **~1.88 MB** (Zero external DLLs) | OS built-in | 120 – 180 MB |
+| **Standalone Binary Size** | **~3.0 MB** (Zero external DLLs) | OS built-in | 120 – 180 MB |
 
 ### Key Performance Optimizations
 
@@ -273,7 +273,7 @@ NovaMonitor is engineered from the ground up to observe the system **without per
 
 ## 🧪 Automated Testing
 
-NovaMonitor ships with a **74-assertion automated test suite** ([`tests/novatest.lpr`](tests/novatest.lpr)) that validates data structures, GDI+ rendering, Win32 security guards, live telemetry bounds, 10-column sorting, and JSON/CSV report schemas.
+NovaMonitor ships with a **100-assertion automated test suite** ([`tests/novatest.lpr`](tests/novatest.lpr)) that validates data structures, GDI+ rendering, Win32 security and process-control guards, live telemetry bounds, 10-column sorting, and JSON/CSV report schemas.
 
 ```powershell
 # Compile and execute the automated test suite
@@ -284,12 +284,14 @@ lazbuild -B tests\novatest.lpi
 | Test Category | Assertions | Verified Behaviors |
 | :--- | :---: | :--- |
 | **Ring Buffer (`THistoryBuffer`)** | `10` | Initial state, element ordering, 30-sample circular capacity cap, and oldest-sample eviction |
-| **GDI+ Anti-Aliasing Engine** | `5` | `BlendColor`, `DrawCard`, `DrawProgressBar`, `DrawBadge`, and `DrawSparkline` gradient fills |
-| **Process Security & Module Guards** | `11` | `PID 0`, `PID 4`, and `CurrentProcessId` guards on `TerminateProcessById`, `SetProcessPriorityById`, `SuspendResumeProcessById`; `FormatRateKBps`; live DLL enumeration via `GetProcessModules` |
-| **Dynamic Polling & System Snapshot** | `9` | Live interval switching (`1500ms` $\rightarrow$ `500ms` $\rightarrow$ `2500ms`), CPU `[0..100%]`, RAM bounds, Disk bounds, and Network `KB/s` rates |
-| **Process Enumeration & Scan Benchmark** | `3` | Multi-pass process scan (`~15 ms` average across 339+ processes), RAM sorting, and non-zero CPU delta calculation |
+| **GDI+ Rendering & Unit Formatters** | `7` | `BlendColor`, `DrawCard`, `DrawProgressBar`, `DrawBadge`, and `DrawSparkline` gradient fills; `FormatRateKBps` MB/s and zero-rate formatting |
+| **Process Security & Control Guards** | `15` | `PID 0`, `PID 4`, and `CurrentProcessId` guards on terminate, suspend, priority, and restart; CPU affinity mask get/set with `PID 0` and empty-mask guards; Run Task empty-command guard; live DLL enumeration via `GetProcessModules` |
+| **Dynamic Polling & System Snapshot** | `11` | Live interval switching (`1500ms` → `500ms` → `2500ms`), CPU `[0..100%]`, RAM bounds, Disk bounds, and Network `KB/s` rates |
+| **Process Enumeration & Scan Benchmark** | `3` | Multi-pass process scan (`~31 ms` average across 344+ processes), RAM sorting, and non-zero CPU delta calculation |
+| **Process Metadata Extraction** | `5` | Full command lines via `NtQueryInformationProcess(60)`, kernel `HandleCount`, digital publisher via `version.dll`, image path, and user account |
 | **JSON & CSV Report Exporters** | `11` | Schema validation (`generator`, `timestamp`, `systemMetrics`, `processes` array) and CSV row/header parity |
-| **ViewModel & 10-Column Sorting** | `25` | All 10 process columns (`0..9`), quick-filter modes (`fmHeavyMemory`, `fmActiveCpu`, `fmCriticalOnly`, `fmAll`), hierarchical `TreeLevel` construction, Network socket collection, and Windows Services status filtering |
+| **ViewModel, Sorting, Tree & Views** | `33` | All 10 process columns (`0..9`), quick-filter modes (`fmHeavyMemory`, `fmActiveCpu`, `fmCriticalOnly`, `fmAll`), hierarchical `TreeLevel` construction, Network socket view, and Windows Services status filtering |
+| **Network Sockets & Windows Services** | `5` | Live TCP/UDP connection collection with valid local ports and running-service enumeration |
 
 ---
 
