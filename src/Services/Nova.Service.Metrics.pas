@@ -65,12 +65,20 @@ type
     FPrevKernelTime: Int64;
     FPrevUserTime: Int64;
     FHasPrevCpuTime: Boolean;
-    // Per-PID CPU sampling: kernel+user time totals from the previous scan
+    // Network interface byte counters for throughput calculation
+    FPrevNetInBytes: UInt64;
+    FPrevNetOutBytes: UInt64;
+    FPrevNetTick: UInt64;
+    FHasPrevNetSample: Boolean;
+    // Per-PID CPU and Disk I/O sampling from the previous scan
     FPrevProcTimes: TDictionary<Cardinal, Int64>;
     FCurProcTimes: TDictionary<Cardinal, Int64>;
+    FPrevProcIo: TDictionary<Cardinal, Int64>;
+    FCurProcIo: TDictionary<Cardinal, Int64>;
     FProcMetaCache: TDictionary<Cardinal, TProcessMeta>;
     FHasPrevProcSample: Boolean;
     FPrevProcTotalTime: Int64;
+    FPrevProcIoTick: UInt64;
 
     function CalculateCpuUsage: Single;
   public
@@ -89,6 +97,10 @@ type
     function CollectNetworkConnections: TNetworkConnectionList;
     function CollectServices: TServiceList;
     function TerminateProcessById(const AProcessId: Cardinal): Boolean;
+    function SetProcessPriorityById(const AProcessId: Cardinal; const APriorityClass: Cardinal): Boolean;
+    function SuspendResumeProcessById(const AProcessId: Cardinal; const ASuspend: Boolean): Boolean;
+    function ControlWindowsService(const AServiceName: string; const AAction: Integer): Boolean;
+    function GetProcessModules(const AProcessId: Cardinal): TStringList;
   end;
 
 implementation
@@ -188,11 +200,18 @@ begin
   FPrevIdleTime := 0;
   FPrevKernelTime := 0;
   FPrevUserTime := 0;
+  FPrevNetInBytes := 0;
+  FPrevNetOutBytes := 0;
+  FPrevNetTick := 0;
+  FHasPrevNetSample := False;
   FPrevProcTimes := TDictionary<Cardinal, Int64>.Create;
   FCurProcTimes := TDictionary<Cardinal, Int64>.Create;
+  FPrevProcIo := TDictionary<Cardinal, Int64>.Create;
+  FCurProcIo := TDictionary<Cardinal, Int64>.Create;
   FProcMetaCache := TDictionary<Cardinal, TProcessMeta>.Create;
   FHasPrevProcSample := False;
   FPrevProcTotalTime := 0;
+  FPrevProcIoTick := 0;
   FIntervalMs := 1500;
 end;
 
@@ -200,6 +219,8 @@ destructor TMetricsService.Destroy;
 begin
   StopMonitoring;
   FProcMetaCache.Free;
+  FCurProcIo.Free;
+  FPrevProcIo.Free;
   FCurProcTimes.Free;
   FPrevProcTimes.Free;
   FLock.Free;
@@ -277,7 +298,59 @@ type
   end;
   PMibUdpTableOwnerPid = ^TMibUdpTableOwnerPid;
 
+  TMibIfRow = packed record
+    wszName: array[0..255] of WideChar;
+    dwIndex: DWORD;
+    dwType: DWORD;
+    dwMtu: DWORD;
+    dwSpeed: DWORD;
+    dwPhysAddrLen: DWORD;
+    bPhysAddr: array[0..7] of Byte;
+    dwAdminStatus: DWORD;
+    dwOperStatus: DWORD;
+    dwLastChange: DWORD;
+    dwInOctets: DWORD;
+    dwInUcastPkts: DWORD;
+    dwInNUcastPkts: DWORD;
+    dwInDiscards: DWORD;
+    dwInErrors: DWORD;
+    dwInUnknownProtos: DWORD;
+    dwOutOctets: DWORD;
+    dwOutUcastPkts: DWORD;
+    dwOutNUcastPkts: DWORD;
+    dwOutDiscards: DWORD;
+    dwOutErrors: DWORD;
+    dwOutQLen: DWORD;
+    dwDescrLen: DWORD;
+    bDescr: array[0..255] of Byte;
+  end;
+
+  TMibIfTable = packed record
+    dwNumEntries: DWORD;
+    table: array[0..0] of TMibIfRow;
+  end;
+  PMibIfTable = ^TMibIfTable;
+
+  TWinIoCounters = record
+    ReadOperationCount: UInt64;
+    WriteOperationCount: UInt64;
+    OtherOperationCount: UInt64;
+    ReadTransferCount: UInt64;
+    WriteTransferCount: UInt64;
+    OtherTransferCount: UInt64;
+  end;
+
   // Service Control Manager types (advapi32.dll)
+  TServiceStatus = record
+    dwServiceType: DWORD;
+    dwCurrentState: DWORD;
+    dwControlsAccepted: DWORD;
+    dwWin32ExitCode: DWORD;
+    dwServiceSpecificExitCode: DWORD;
+    dwCheckPoint: DWORD;
+    dwWaitHint: DWORD;
+  end;
+
   TServiceStatusProcess = record
     dwServiceType: DWORD;
     dwCurrentState: DWORD;
@@ -325,18 +398,37 @@ type
     PageFaultCount: DWORD;
     PeakWorkingSetSize: NativeUInt;
     WorkingSetSize: NativeUInt;
+    QuotaPeakPagedPoolUsage: NativeUInt;
+    QuotaPagedPoolUsage: NativeUInt;
+    QuotaPeakNonPagedPoolUsage: NativeUInt;
+    QuotaNonPagedPoolUsage: NativeUInt;
+    PagefileUsage: NativeUInt;
+    PeakPagefileUsage: NativeUInt;
+    PrivatePageCount: NativeUInt;
+    ReadOperationCount: Int64;
+    WriteOperationCount: Int64;
+    OtherOperationCount: Int64;
+    ReadTransferCount: Int64;
+    WriteTransferCount: Int64;
+    OtherTransferCount: Int64;
   end;
   PNtSystemProcessInfo = ^TNtSystemProcessInfo;
 
   TKernelProcStat = record
     WorkingSetMB: Single;
     TotalTime: Int64;
+    IoBytes: Int64;
+    BasePriority: LongInt;
     SessionId: DWORD;
   end;
 
 const
   // Local declarations shadow Windows-unit constants where present
   PROCESS_QUERY_LIMITED_INFORMATION = $1000;
+  PROCESS_SET_INFORMATION = $0200;
+  PROCESS_SUSPEND_RESUME = $0800;
+  PROCESS_QUERY_INFORMATION = $0400;
+  PROCESS_VM_READ = $0010;
   TH32CS_SNAPPROCESS = $2;
   SystemProcessInformation = 5;
   STATUS_INFO_LENGTH_MISMATCH = LongInt($C0000004);
@@ -344,9 +436,15 @@ const
   TCP_TABLE_OWNER_PID_ALL = 5;
   UDP_TABLE_OWNER_PID = 1;
   AF_INET = 2;
+  MIB_IF_TYPE_LOOPBACK = 24;
 
+  SC_MANAGER_CONNECT = $0001;
   SC_MANAGER_ENUMERATE_SERVICE = $0004;
   SC_ENUM_PROCESS_INFO = 0;
+  SERVICE_START = $0010;
+  SERVICE_STOP = $0020;
+  SERVICE_QUERY_STATUS = $0004;
+  SERVICE_CONTROL_STOP = $00000001;
   SERVICE_WIN32 = $00000030;
   SERVICE_STATE_ALL = $00000003;
 
@@ -361,27 +459,54 @@ const
 function GlobalMemoryStatusEx(var lpBuffer: TWinMemoryStatusEx): BOOL; stdcall; external 'kernel32.dll';
 function GetSystemTimes(lpIdleTime, lpKernelTime, lpUserTime: PFileTime): BOOL; stdcall; external 'kernel32.dll';
 function GetProcessMemoryInfo(hProcess: THandle; ppsmemCounters: PWinProcessMemoryCounters; cb: DWORD): BOOL; stdcall; external 'psapi.dll';
+function EnumProcessModules(hProcess: THandle; lphModule: PHandle; cb: DWORD; var lpcbNeeded: DWORD): BOOL; stdcall; external 'psapi.dll' name 'EnumProcessModules';
+function GetModuleFileNameExW(hProcess: THandle; hModule: THandle; lpFilename: PWideChar; nSize: DWORD): DWORD; stdcall; external 'psapi.dll' name 'GetModuleFileNameExW';
 function CreateToolhelp32Snapshot(dwFlags: DWORD; th32ProcessID: DWORD): THandle; stdcall; external 'kernel32.dll';
 function Process32First(hSnapshot: THandle; var lpEntry: TWinProcessEntry32): BOOL; stdcall; external 'kernel32.dll';
 function Process32Next(hSnapshot: THandle; var lpEntry: TWinProcessEntry32): BOOL; stdcall; external 'kernel32.dll';
 function QueryFullProcessImageNameW(hProcess: THandle; dwFlags: DWORD; lpExeName: PWideChar; var lpdwSize: DWORD): BOOL; stdcall; external 'kernel32.dll' name 'QueryFullProcessImageNameW';
 function IsWow64Process(hProcess: THandle; var Wow64Process: BOOL): BOOL; stdcall; external 'kernel32.dll' name 'IsWow64Process';
+function GetProcessIoCounters(hProcess: THandle; var lpIoCounters: TWinIoCounters): BOOL; stdcall; external 'kernel32.dll' name 'GetProcessIoCounters';
+function GetPriorityClass(hProcess: THandle): DWORD; stdcall; external 'kernel32.dll' name 'GetPriorityClass';
+function SetPriorityClass(hProcess: THandle; dwPriorityClass: DWORD): BOOL; stdcall; external 'kernel32.dll' name 'SetPriorityClass';
 function NtQuerySystemInformation(SystemInformationClass: DWORD; SystemInformation: Pointer; SystemInformationLength: DWORD; var ReturnLength: DWORD): LongInt; stdcall; external 'ntdll.dll' name 'NtQuerySystemInformation';
+function NtSuspendProcess(ProcessHandle: THandle): LongInt; stdcall; external 'ntdll.dll' name 'NtSuspendProcess';
+function NtResumeProcess(ProcessHandle: THandle): LongInt; stdcall; external 'ntdll.dll' name 'NtResumeProcess';
 
 function OpenProcessToken(ProcessHandle: THandle; DesiredAccess: DWORD; var TokenHandle: THandle): BOOL; stdcall; external 'advapi32.dll' name 'OpenProcessToken';
 function GetTokenInformation(TokenHandle: THandle; TokenInformationClass: DWORD; TokenInformation: Pointer; TokenInformationLength: DWORD; var ReturnLength: DWORD): BOOL; stdcall; external 'advapi32.dll' name 'GetTokenInformation';
 function LookupAccountSidW(lpSystemName: PWideChar; Sid: Pointer; Name: PWideChar; var cchName: DWORD; ReferencedDomainName: PWideChar; var cchReferencedDomainName: DWORD; var peUse: DWORD): BOOL; stdcall; external 'advapi32.dll' name 'LookupAccountSidW';
 
 function OpenSCManagerW(lpMachineName, lpDatabaseName: PWideChar; dwDesiredAccess: DWORD): THandle; stdcall; external 'advapi32.dll' name 'OpenSCManagerW';
+function OpenServiceW(hSCManager: THandle; lpServiceName: PWideChar; dwDesiredAccess: DWORD): THandle; stdcall; external 'advapi32.dll' name 'OpenServiceW';
+function StartServiceW(hService: THandle; dwNumServiceArgs: DWORD; lpServiceArgVectors: Pointer): BOOL; stdcall; external 'advapi32.dll' name 'StartServiceW';
+function ControlService(hService: THandle; dwControl: DWORD; var lpServiceStatus: TServiceStatus): BOOL; stdcall; external 'advapi32.dll' name 'ControlService';
 function EnumServicesStatusExW(hSCManager: THandle; InfoLevel, dwServiceType, dwServiceState: DWORD; lpServices: Pointer; cbBufSize: DWORD; var pcbBytesNeeded, lpServicesReturned, lpResumeHandle: DWORD; pszGroupName: PWideChar): BOOL; stdcall; external 'advapi32.dll' name 'EnumServicesStatusExW';
 function CloseServiceHandle(hSCObject: THandle): BOOL; stdcall; external 'advapi32.dll' name 'CloseServiceHandle';
 
 function GetExtendedTcpTable(pTcpTable: Pointer; pdwSize: PDWORD; bOrder: BOOL; ulAf: ULONG; TableClass: Integer; Reserved: ULONG): DWORD; stdcall; external 'iphlpapi.dll' name 'GetExtendedTcpTable';
 function GetExtendedUdpTable(pUdpTable: Pointer; pdwSize: PDWORD; bOrder: BOOL; ulAf: ULONG; TableClass: Integer; Reserved: ULONG): DWORD; stdcall; external 'iphlpapi.dll' name 'GetExtendedUdpTable';
+function GetIfTable(pIfTable: Pointer; var pdwSize: ULONG; bOrder: BOOL): DWORD; stdcall; external 'iphlpapi.dll' name 'GetIfTable';
 
 function FileTimeToLargeInt(const FT: TFileTime): Int64;
 begin
   Result := (Int64(FT.dwHighDateTime) shl 32) or FT.dwLowDateTime;
+end;
+
+function PriorityClassToStr(const APrio: DWORD; const ABasePrio: LongInt): string;
+begin
+  case APrio of
+    $00000040: Result := 'Idle';
+    $00004000: Result := 'Below Normal';
+    $00000020: Result := 'Normal';
+    $00008000: Result := 'Above Normal';
+    $00000080: Result := 'High';
+    $00000100: Result := 'Realtime';
+  else
+    if ABasePrio >= 13 then Result := 'High'
+    else if ABasePrio <= 4 then Result := 'Idle'
+    else Result := 'Normal';
+  end;
 end;
 
 procedure CollectKernelProcStats(const AMap: TDictionary<Cardinal, TKernelProcStat>);
@@ -414,6 +539,8 @@ begin
         begin
           Stat.WorkingSetMB := Cur^.WorkingSetSize / (1024.0 * 1024.0);
           Stat.TotalTime := Cur^.KernelTime + Cur^.UserTime;
+          Stat.IoBytes := Cur^.ReadTransferCount + Cur^.WriteTransferCount;
+          Stat.BasePriority := Cur^.BasePriority;
           Stat.SessionId := Cur^.SessionId;
           AMap.AddOrSetValue(Cardinal(Cur^.UniqueProcessId), Stat);
         end;
@@ -520,6 +647,11 @@ var
   MemStatus: TWinMemoryStatusEx;
   FreeBytesAvailable, TotalNumberOfBytes, TotalNumberOfFreeBytes: Int64;
   RootPath: string;
+  IfSize: ULONG;
+  IfBuf: Pointer;
+  IfTable: PMibIfTable;
+  I: Integer;
+  TotalIn, TotalOut, CurTick, ElapsedMs: UInt64;
 begin
   Result := TSystemMetrics.CreateEmpty;
   FreeBytesAvailable := 0;
@@ -553,6 +685,45 @@ begin
         Result.DiskUsagePercent := 0.0;
     end;
 
+    // Network interface throughput (KB/s Down & Up)
+    IfSize := 0;
+    GetIfTable(nil, IfSize, False);
+    if IfSize > 0 then
+    begin
+      GetMem(IfBuf, IfSize);
+      try
+        if GetIfTable(IfBuf, IfSize, False) = 0 then
+        begin
+          IfTable := PMibIfTable(IfBuf);
+          TotalIn := 0;
+          TotalOut := 0;
+          for I := 0 to Integer(IfTable^.dwNumEntries) - 1 do
+          begin
+            if IfTable^.table[I].dwType <> MIB_IF_TYPE_LOOPBACK then
+            begin
+              TotalIn := TotalIn + IfTable^.table[I].dwInOctets;
+              TotalOut := TotalOut + IfTable^.table[I].dwOutOctets;
+            end;
+          end;
+          CurTick := GetTickCount64;
+          if FHasPrevNetSample and (CurTick > FPrevNetTick) then
+          begin
+            ElapsedMs := CurTick - FPrevNetTick;
+            if TotalIn >= FPrevNetInBytes then
+              Result.NetDownloadKBps := ((TotalIn - FPrevNetInBytes) / 1024.0) * (1000.0 / ElapsedMs);
+            if TotalOut >= FPrevNetOutBytes then
+              Result.NetUploadKBps := ((TotalOut - FPrevNetOutBytes) / 1024.0) * (1000.0 / ElapsedMs);
+          end;
+          FPrevNetInBytes := TotalIn;
+          FPrevNetOutBytes := TotalOut;
+          FPrevNetTick := CurTick;
+          FHasPrevNetSample := True;
+        end;
+      finally
+        FreeMem(IfBuf);
+      end;
+    end;
+
     Result.UptimeSeconds := GetTickCount64 div 1000;
     Result.Timestamp := Now;
   finally
@@ -583,15 +754,19 @@ var
   Entry: TWinProcessEntry32;
   ProcHandle: THandle;
   MemCounters: TWinProcessMemoryCounters;
+  IoCounters: TWinIoCounters;
   SysIdle, SysKernel, SysUser: TFileTime;
   CreationT, ExitT, ProcKernelT, ProcUserT: TFileTime;
   Item: TProcessItem;
-  MemMB: Single;
+  MemMB, CpuPct, IoKBps: Single;
   Status: TItemStatus;
   Idx: Integer;
   ProcId: Cardinal;
   ProcTotal, TotalNow, TotalDelta, PrevProc: Int64;
-  CpuPct: Single;
+  ProcIoBytes, PrevIo: Int64;
+  CurIoTick, IoElapsedMs: UInt64;
+  PrioClass: DWORD;
+  BasePrio: LongInt;
   Meta: TProcessMeta;
   PathBuf: WideString;
   PathLen: DWORD;
@@ -605,8 +780,14 @@ begin
   FLock.Enter;
   try
     FCurProcTimes.Clear;
+    FCurProcIo.Clear;
     GetSystemTimes(@SysIdle, @SysKernel, @SysUser);
     TotalNow := FileTimeToLargeInt(SysKernel) + FileTimeToLargeInt(SysUser);
+    CurIoTick := GetTickCount64;
+    if FHasPrevProcSample and (CurIoTick > FPrevProcIoTick) then
+      IoElapsedMs := CurIoTick - FPrevProcIoTick
+    else
+      IoElapsedMs := 0;
 
     KernelStats := TDictionary<Cardinal, TKernelProcStat>.Create;
     try
@@ -628,11 +809,16 @@ begin
           ProcName := StrPas(Entry.szExeFile);
           MemMB := 0.0;
           ProcTotal := 0;
+          ProcIoBytes := 0;
+          PrioClass := 0;
+          BasePrio := Entry.pcPriClassBase;
 
           if KernelStats.TryGetValue(ProcId, KStat) then
           begin
             MemMB := KStat.WorkingSetMB;
             ProcTotal := KStat.TotalTime;
+            ProcIoBytes := KStat.IoBytes;
+            BasePrio := KStat.BasePriority;
           end;
 
           ProcHandle := OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, ProcId);
@@ -645,6 +831,9 @@ begin
             // Kernel+user CPU time totals; sampled against the previous scan
             if GetProcessTimes(ProcHandle, CreationT, ExitT, ProcKernelT, ProcUserT) then
               ProcTotal := FileTimeToLargeInt(ProcKernelT) + FileTimeToLargeInt(ProcUserT);
+            if GetProcessIoCounters(ProcHandle, IoCounters) then
+              ProcIoBytes := Int64(IoCounters.ReadTransferCount + IoCounters.WriteTransferCount);
+            PrioClass := GetPriorityClass(ProcHandle);
 
             if not FProcMetaCache.TryGetValue(ProcId, Meta) then
             begin
@@ -692,6 +881,7 @@ begin
             end;
           end;
           FCurProcTimes.AddOrSetValue(ProcId, ProcTotal);
+          FCurProcIo.AddOrSetValue(ProcId, ProcIoBytes);
 
           CpuPct := 0.0;
           if FHasPrevProcSample and FPrevProcTimes.TryGetValue(ProcId, PrevProc) then
@@ -703,6 +893,13 @@ begin
               if CpuPct < 0.0 then CpuPct := 0.0;
               if CpuPct > 100.0 then CpuPct := 100.0;
             end;
+          end;
+
+          IoKBps := 0.0;
+          if FHasPrevProcSample and (IoElapsedMs > 0) and FPrevProcIo.TryGetValue(ProcId, PrevIo) then
+          begin
+            if ProcIoBytes > PrevIo then
+              IoKBps := ((ProcIoBytes - PrevIo) / 1024.0) * (1000.0 / IoElapsedMs);
           end;
 
           // Health from CPU share and working set
@@ -728,6 +925,8 @@ begin
           Item.ImagePath := Meta.ImagePath;
           Item.UserName := Meta.UserName;
           Item.Architecture := Meta.Architecture;
+          Item.DiskIoKBps := IoKBps;
+          Item.PriorityText := PriorityClassToStr(PrioClass, BasePrio);
 
         // Keep largest memory consumers first; sorted insertion instead of a
         // comparer callback (FPC 3.2 stable has no anonymous methods)
@@ -748,8 +947,12 @@ begin
     FPrevProcTimes.Free;
     FPrevProcTimes := FCurProcTimes;
     FCurProcTimes := TDictionary<Cardinal, Int64>.Create;
+    FPrevProcIo.Free;
+    FPrevProcIo := FCurProcIo;
+    FCurProcIo := TDictionary<Cardinal, Int64>.Create;
     FHasPrevProcSample := True;
     FPrevProcTotalTime := TotalNow;
+    FPrevProcIoTick := CurIoTick;
   finally
     FLock.Leave;
   end;
@@ -821,6 +1024,160 @@ begin
     end;
   end;
 end;
+
+function TMetricsService.SetProcessPriorityById(const AProcessId: Cardinal; const APriorityClass: Cardinal): Boolean;
+{$IFDEF MSWINDOWS}
+var
+  HProc: THandle;
+begin
+  Result := False;
+  if AProcessId <= 4 then Exit;
+  HProc := OpenProcess(PROCESS_SET_INFORMATION, False, AProcessId);
+  if HProc <> 0 then
+  begin
+    try
+      Result := SetPriorityClass(HProc, APriorityClass);
+    finally
+      CloseHandle(HProc);
+    end;
+  end;
+end;
+{$ELSE}
+begin
+  Result := False;
+end;
+{$ENDIF}
+
+function TMetricsService.SuspendResumeProcessById(const AProcessId: Cardinal; const ASuspend: Boolean): Boolean;
+{$IFDEF MSWINDOWS}
+var
+  HProc: THandle;
+begin
+  Result := False;
+  if (AProcessId <= 4) or (AProcessId = GetCurrentProcessId) then Exit;
+  HProc := OpenProcess(PROCESS_SUSPEND_RESUME, False, AProcessId);
+  if HProc <> 0 then
+  begin
+    try
+      if ASuspend then
+        Result := (NtSuspendProcess(HProc) = 0)
+      else
+        Result := (NtResumeProcess(HProc) = 0);
+    finally
+      CloseHandle(HProc);
+    end;
+  end;
+end;
+{$ELSE}
+begin
+  Result := False;
+end;
+{$ENDIF}
+
+function TMetricsService.ControlWindowsService(const AServiceName: string; const AAction: Integer): Boolean;
+{$IFDEF MSWINDOWS}
+var
+  HSCM, HSvc: THandle;
+  SvcStatus: TServiceStatus;
+  WName: WideString;
+begin
+  Result := False;
+  if AServiceName = '' then Exit;
+  HSCM := OpenSCManagerW(nil, nil, SC_MANAGER_CONNECT);
+  if HSCM = 0 then Exit;
+  try
+    WName := WideString(AServiceName);
+    HSvc := OpenServiceW(HSCM, PWideChar(WName), SERVICE_START or SERVICE_STOP or SERVICE_QUERY_STATUS);
+    if HSvc <> 0 then
+    begin
+      try
+        FillChar(SvcStatus, SizeOf(SvcStatus), 0);
+        case AAction of
+          0: Result := StartServiceW(HSvc, 0, nil);
+          1: Result := ControlService(HSvc, SERVICE_CONTROL_STOP, SvcStatus);
+          2: begin
+               ControlService(HSvc, SERVICE_CONTROL_STOP, SvcStatus);
+               Sleep(250);
+               Result := StartServiceW(HSvc, 0, nil);
+             end;
+        end;
+      finally
+        CloseServiceHandle(HSvc);
+      end;
+    end;
+  finally
+    CloseServiceHandle(HSCM);
+  end;
+end;
+{$ELSE}
+begin
+  Result := False;
+end;
+{$ENDIF}
+
+function TMetricsService.GetProcessModules(const AProcessId: Cardinal): TStringList;
+{$IFDEF MSWINDOWS}
+var
+  HProc: THandle;
+  Mods: array[0..511] of THandle;
+  Needed, Count, I, Len: DWORD;
+  ModPath: array[0..511] of WideChar;
+  S: string;
+begin
+  Result := TStringList.Create;
+  if AProcessId <= 4 then
+  begin
+    Result.Add('ntoskrnl.exe (Windows NT Kernel System Process)');
+    Exit;
+  end;
+
+  HProc := OpenProcess(PROCESS_QUERY_INFORMATION or PROCESS_VM_READ, False, AProcessId);
+  if HProc = 0 then
+    HProc := OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, AProcessId);
+
+  if HProc <> 0 then
+  begin
+    try
+      Needed := 0;
+      if EnumProcessModules(HProc, @Mods[0], SizeOf(Mods), Needed) and (Needed > 0) then
+      begin
+        Count := Needed div SizeOf(THandle);
+        if Count > 512 then Count := 512;
+        for I := 0 to Integer(Count) - 1 do
+        begin
+          FillChar(ModPath, SizeOf(ModPath), 0);
+          if GetModuleFileNameExW(HProc, Mods[I], @ModPath[0], 511) > 0 then
+          begin
+            S := WideCharToString(ModPath);
+            if S <> '' then
+              Result.Add(Format('[0x%p]  %s  —  %s', [Pointer(Mods[I]), ExtractFileName(S), S]));
+          end;
+        end;
+      end;
+
+      if Result.Count = 0 then
+      begin
+        Len := 511;
+        FillChar(ModPath, SizeOf(ModPath), 0);
+        if QueryFullProcessImageNameW(HProc, 0, @ModPath[0], Len) then
+        begin
+          S := WideCharToString(ModPath);
+          Result.Add(Format('%s  —  %s (Protected module list)', [ExtractFileName(S), S]));
+        end;
+      end;
+    finally
+      CloseHandle(HProc);
+    end;
+  end;
+
+  if Result.Count = 0 then
+    Result.Add('Access restricted by Windows Protected Process Light (PPL) security.');
+end;
+{$ELSE}
+begin
+  Result := TStringList.Create;
+end;
+{$ENDIF}
 
 function TMetricsService.CollectNetworkConnections: TNetworkConnectionList;
 {$IFDEF MSWINDOWS}

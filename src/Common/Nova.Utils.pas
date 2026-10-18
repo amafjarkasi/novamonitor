@@ -45,6 +45,7 @@ type
     class function GetThemeColors(const ATheme: TAppTheme): TThemeColors; static;
     class function FormatBytes(const ABytes: UInt64): string; static;
     class function FormatMegabytes(const AMB: Single): string; static;
+    class function FormatRateKBps(const AKBps: Single): string; static;
     class function FormatDuration(const ASeconds: UInt64): string; static;
     class function FormatPercent(const AValue: Single): string; static;
     class function StatusToString(const AStatus: TItemStatus): string; static;
@@ -149,6 +150,16 @@ begin
     Result := Format('%.2f GB', [AMB / 1024.0])
   else
     Result := Format('%.1f MB', [AMB]);
+end;
+
+class function TUIUtils.FormatRateKBps(const AKBps: Single): string;
+begin
+  if AKBps >= 1024.0 then
+    Result := Format('%.2f MB/s', [AKBps / 1024.0])
+  else if AKBps >= 0.05 then
+    Result := Format('%.1f KB/s', [AKBps])
+  else
+    Result := '0.0 KB/s';
 end;
 
 class function TUIUtils.FormatDuration(const ASeconds: UInt64): string;

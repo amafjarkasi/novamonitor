@@ -59,7 +59,7 @@ type
 
     // Column sort state:
     // 0 = PID, 1 = Name, 2 = User, 3 = Arch, 4 = CPU %,
-    // 5 = Memory, 6 = Health Status, 7 = Threads, 8 = Image Path
+    // 5 = Memory, 6 = Disk I/O, 7 = Health Status, 8 = Threads, 9 = Image Path
     FSortColumn: Integer;
     FSortAscending: Boolean;
     FPollingIntervalMs: Cardinal;
@@ -90,6 +90,10 @@ type
     procedure SetFilterMode(const AMode: TProcessFilterMode);
     procedure SetSort(const AColumn: Integer);
     function KillProcess(const AProcessId: Cardinal): Boolean;
+    function SetProcessPriority(const AProcessId: Cardinal; const APriorityClass: Cardinal; const APriorityName: string): Boolean;
+    function SuspendResumeProcess(const AProcessId: Cardinal; const ASuspend: Boolean): Boolean;
+    function ControlServiceByName(const AServiceName: string; const AAction: Integer): Boolean;
+    function GetProcessModules(const AProcessId: Cardinal): TStringList;
     function ExportReport(const AFilePath: string): Boolean;
 
     procedure RefreshNetworkConnections;
@@ -333,9 +337,9 @@ begin
   else
   begin
     FSortColumn := AColumn;
-    // Numeric/severity columns (4 = CPU %, 5 = Memory, 6 = Health Status, 7 = Threads)
+    // Numeric/severity columns (4 = CPU %, 5 = Memory, 6 = Disk I/O, 7 = Health Status, 8 = Threads)
     // read naturally descending on first click; text/ID columns ascending
-    FSortAscending := not (AColumn in [4, 5, 6, 7]);
+    FSortAscending := not (AColumn in [4, 5, 6, 7, 8]);
   end;
   ApplyFilter;
   if Assigned(FOnProcessesUpdated) then
@@ -511,12 +515,16 @@ begin
          if A.MemoryWorkingSetMB > B.MemoryWorkingSetMB then Result := 1
          else if A.MemoryWorkingSetMB < B.MemoryWorkingSetMB then Result := -1;
        end;
-    6: Result := StatusSeverity(A.Status) - StatusSeverity(B.Status); // Health Status
-    7: begin // Active Threads
+    6: begin // Disk I/O (KB/s)
+         if A.DiskIoKBps > B.DiskIoKBps then Result := 1
+         else if A.DiskIoKBps < B.DiskIoKBps then Result := -1;
+       end;
+    7: Result := StatusSeverity(A.Status) - StatusSeverity(B.Status); // Health Status
+    8: begin // Active Threads
          if A.ThreadCount > B.ThreadCount then Result := 1
          else if A.ThreadCount < B.ThreadCount then Result := -1;
        end;
-    8: Result := CompareText(A.ImagePath, B.ImagePath); // Image Path
+    9: Result := CompareText(A.ImagePath, B.ImagePath); // Image Path
   end;
   if Result = 0 then
     Result := CompareText(A.Name, B.Name); // stable tiebreak
@@ -641,6 +649,92 @@ begin
         FOnStatusMessage(Format('Failed to terminate process %d (Access Denied or System Protected).', [AProcessId]), True);
     end;
   end;
+end;
+
+function TMainViewModel.SetProcessPriority(const AProcessId: Cardinal; const APriorityClass: Cardinal; const APriorityName: string): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  if Assigned(FMetricsService) then
+  begin
+    Result := FMetricsService.SetProcessPriorityById(AProcessId, APriorityClass);
+    if Result then
+    begin
+      for I := 0 to FProcesses.Count - 1 do
+        if FProcesses[I].Id = AProcessId then
+        begin
+          FProcesses[I].PriorityText := APriorityName;
+          Break;
+        end;
+      if Assigned(FOnProcessesUpdated) then
+        FOnProcessesUpdated(FFilteredProcesses);
+      if Assigned(FOnStatusMessage) then
+        FOnStatusMessage(Format('Process %d priority set to %s.', [AProcessId, APriorityName]), False);
+    end
+    else if Assigned(FOnStatusMessage) then
+      FOnStatusMessage(Format('Failed to set priority for PID %d (Access Denied or System Protected).', [AProcessId]), True);
+  end;
+end;
+
+function TMainViewModel.SuspendResumeProcess(const AProcessId: Cardinal; const ASuspend: Boolean): Boolean;
+begin
+  Result := False;
+  if Assigned(FMetricsService) then
+  begin
+    Result := FMetricsService.SuspendResumeProcessById(AProcessId, ASuspend);
+    if Result then
+    begin
+      if Assigned(FOnStatusMessage) then
+      begin
+        if ASuspend then
+          FOnStatusMessage(Format('Process %d suspended.', [AProcessId]), False)
+        else
+          FOnStatusMessage(Format('Process %d resumed.', [AProcessId]), False);
+      end;
+    end
+    else if Assigned(FOnStatusMessage) then
+    begin
+      if ASuspend then
+        FOnStatusMessage(Format('Failed to suspend PID %d (Access Denied or System Protected).', [AProcessId]), True)
+      else
+        FOnStatusMessage(Format('Failed to resume PID %d (Access Denied or System Protected).', [AProcessId]), True);
+    end;
+  end;
+end;
+
+function TMainViewModel.ControlServiceByName(const AServiceName: string; const AAction: Integer): Boolean;
+var
+  ActionName: string;
+begin
+  Result := False;
+  case AAction of
+    0: ActionName := 'started';
+    1: ActionName := 'stopped';
+    2: ActionName := 'restarted';
+  else
+    ActionName := 'updated';
+  end;
+  if Assigned(FMetricsService) then
+  begin
+    Result := FMetricsService.ControlWindowsService(AServiceName, AAction);
+    RefreshServices;
+    if Result then
+    begin
+      if Assigned(FOnStatusMessage) then
+        FOnStatusMessage(Format('Service "%s" %s successfully.', [AServiceName, ActionName]), False);
+    end
+    else if Assigned(FOnStatusMessage) then
+      FOnStatusMessage(Format('Failed to control service "%s" (Administrator privileges required or service dependent).', [AServiceName]), True);
+  end;
+end;
+
+function TMainViewModel.GetProcessModules(const AProcessId: Cardinal): TStringList;
+begin
+  if Assigned(FMetricsService) then
+    Result := FMetricsService.GetProcessModules(AProcessId)
+  else
+    Result := TStringList.Create;
 end;
 
 function TMainViewModel.ExportReport(const AFilePath: string): Boolean;

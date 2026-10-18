@@ -110,6 +110,7 @@ type
     FTrayIcon: TTrayIcon;
     FActiveView: TAppView;
     FContextMenu: TPopupMenu;
+    FServiceContextMenu: TPopupMenu;
 
     lblTray: TLabel;
     imgHeaderLogo: TImage;
@@ -122,6 +123,7 @@ type
     btnFilterCrit: TButton;
     btnEndTask: TButton;
     btnToggleTree: TButton;
+    btnInspectProc: TButton;
     btnNavNetwork: TButton;
     btnNavServices: TButton;
 
@@ -146,9 +148,13 @@ type
     btnSvcFilterAll: TButton;
     btnSvcFilterRunning: TButton;
     btnSvcFilterStopped: TButton;
+    btnSvcStart: TButton;
+    btnSvcStop: TButton;
+    btnSvcRestart: TButton;
     lvServices: TListView;
 
     function GetSelectedProcess: TProcessItem;
+    function GetSelectedService: TServiceItem;
     procedure SetupContextMenu;
     procedure SetupTableToolbarActions;
     procedure SetupProcessColumns;
@@ -157,6 +163,7 @@ type
     procedure UpdateFilterChipStyles;
     procedure UpdateServiceFilterStyles;
     procedure TerminateSelectedProcess;
+    procedure ShowProcessDetailsDialog;
 
     procedure btnPinWindowClick(Sender: TObject);
     procedure btnFilterAllClick(Sender: TObject);
@@ -165,9 +172,15 @@ type
     procedure btnFilterCritClick(Sender: TObject);
     procedure btnEndTaskClick(Sender: TObject);
     procedure btnToggleTreeClick(Sender: TObject);
+    procedure btnInspectProcClick(Sender: TObject);
+    procedure lvProcessesDblClick(Sender: TObject);
     procedure btnNavNetworkClick(Sender: TObject);
     procedure btnNavServicesClick(Sender: TObject);
     procedure mnuEndTaskClick(Sender: TObject);
+    procedure mnuInspectClick(Sender: TObject);
+    procedure mnuSetPriorityClick(Sender: TObject);
+    procedure mnuSuspendProcessClick(Sender: TObject);
+    procedure mnuResumeProcessClick(Sender: TObject);
 
     procedure mnuCopyNameClick(Sender: TObject);
     procedure mnuCopyPidClick(Sender: TObject);
@@ -175,6 +188,10 @@ type
     procedure mnuCopyPathClick(Sender: TObject);
     procedure mnuCopyUserClick(Sender: TObject);
     procedure mnuOpenFileLocationClick(Sender: TObject);
+
+    procedure btnSvcStartClick(Sender: TObject);
+    procedure btnSvcStopClick(Sender: TObject);
+    procedure btnSvcRestartClick(Sender: TObject);
 
     procedure OnMetricsUpdated(const AMetrics: TSystemMetrics);
     procedure OnProcessesUpdated(const AProcesses: TProcessList);
@@ -254,9 +271,9 @@ const
   AscArrow  = #$25B2;
   DescArrow = #$25BC;
   {$ENDIF}
-  BaseColumnCaptions: array[0..8] of string =
-    ('PID', 'Process Name', 'User Account', 'Arch', 'CPU %', 'Working Set (RAM)', 'Health Status',
-     'Active Threads', 'Image Path');
+  BaseColumnCaptions: array[0..9] of string =
+    ('PID', 'Process Name', 'User Account', 'Arch', 'CPU %', 'Working Set (RAM)',
+     'Disk I/O', 'Health Status', 'Active Threads', 'Image Path');
   BaseNetCaptions: array[0..5] of string =
     ('PID', 'Process Name', 'Protocol', 'Local Address:Port', 'Remote Address:Port', 'State');
   BaseSvcCaptions: array[0..4] of string =
@@ -298,6 +315,7 @@ begin
   lvProcesses.ColumnClick := True; // LCL gates header clicks on this flag
   {$ENDIF}
   lvProcesses.OnColumnClick := lvProcessesColumnClick;
+  lvProcesses.OnDblClick := lvProcessesDblClick;
 
   // Owner-data (virtual) list: rows are served from the ViewModel on demand.
   lvProcesses.OwnerData := True;
@@ -479,6 +497,14 @@ begin
   btnToggleTree.Hint := 'Toggle Hierarchical Tree / Flat View';
   btnToggleTree.ShowHint := True;
   btnToggleTree.OnClick := btnToggleTreeClick;
+
+  btnInspectProc := TButton.Create(Self);
+  btnInspectProc.Parent := pnlTableToolbar;
+  btnInspectProc.SetBounds(715, 7, 78, 26);
+  btnInspectProc.Caption := 'Inspect...';
+  btnInspectProc.Hint := 'Inspect selected process details, modules, and sockets (Enter)';
+  btnInspectProc.ShowHint := True;
+  btnInspectProc.OnClick := btnInspectProcClick;
 end;
 
 procedure TMainForm.SetupProcessColumns;
@@ -489,42 +515,47 @@ begin
 
   Col := lvProcesses.Columns.Add;
   Col.Caption := 'PID';
-  Col.Width := 75;
+  Col.Width := 70;
 
   Col := lvProcesses.Columns.Add;
   Col.Caption := 'Process Name';
-  Col.Width := 210;
+  Col.Width := 195;
 
   Col := lvProcesses.Columns.Add;
   Col.Caption := 'User Account';
-  Col.Width := 150;
+  Col.Width := 140;
 
   Col := lvProcesses.Columns.Add;
   Col.Caption := 'Arch';
-  Col.Width := 65;
+  Col.Width := 55;
 
   Col := lvProcesses.Columns.Add;
   Col.Caption := 'CPU %';
-  Col.Width := 70;
+  Col.Width := 68;
   Col.Alignment := taRightJustify;
 
   Col := lvProcesses.Columns.Add;
   Col.Caption := 'Working Set (RAM)';
-  Col.Width := 130;
+  Col.Width := 125;
+  Col.Alignment := taRightJustify;
+
+  Col := lvProcesses.Columns.Add;
+  Col.Caption := 'Disk I/O';
+  Col.Width := 85;
   Col.Alignment := taRightJustify;
 
   Col := lvProcesses.Columns.Add;
   Col.Caption := 'Health Status';
-  Col.Width := 110;
+  Col.Width := 100;
 
   Col := lvProcesses.Columns.Add;
   Col.Caption := 'Active Threads';
-  Col.Width := 90;
+  Col.Width := 85;
   Col.Alignment := taRightJustify;
 
   Col := lvProcesses.Columns.Add;
   Col.Caption := 'Image Path';
-  Col.Width := 260;
+  Col.Width := 250;
 end;
 
 procedure TMainForm.SetupNetworkSection;
@@ -578,7 +609,7 @@ begin
 
   lblNetworkCount := TLabel.Create(Self);
   lblNetworkCount.Parent := pnlNetworkToolbar;
-  lblNetworkCount.SetBounds(530, 12, 180, 20);
+  lblNetworkCount.SetBounds(530, 12, 380, 20);
   lblNetworkCount.Caption := '0 connections';
 
   lvNetwork := TListView.Create(Self);
@@ -625,6 +656,7 @@ end;
 procedure TMainForm.SetupServicesSection;
 var
   Col: TListColumn;
+  SvcMenuItem: TMenuItem;
 begin
   pnlServicesSection := TPanel.Create(Self);
   pnlServicesSection.Parent := pnlContent;
@@ -689,9 +721,33 @@ begin
   btnRefreshServices.Caption := 'Refresh';
   btnRefreshServices.OnClick := btnRefreshServicesClick;
 
+  btnSvcStart := TButton.Create(Self);
+  btnSvcStart.Parent := pnlServicesToolbar;
+  btnSvcStart.SetBounds(658, 7, 62, 26);
+  btnSvcStart.Caption := 'Start';
+  btnSvcStart.Hint := 'Start selected Windows service';
+  btnSvcStart.ShowHint := True;
+  btnSvcStart.OnClick := btnSvcStartClick;
+
+  btnSvcStop := TButton.Create(Self);
+  btnSvcStop.Parent := pnlServicesToolbar;
+  btnSvcStop.SetBounds(724, 7, 62, 26);
+  btnSvcStop.Caption := 'Stop';
+  btnSvcStop.Hint := 'Stop selected Windows service';
+  btnSvcStop.ShowHint := True;
+  btnSvcStop.OnClick := btnSvcStopClick;
+
+  btnSvcRestart := TButton.Create(Self);
+  btnSvcRestart.Parent := pnlServicesToolbar;
+  btnSvcRestart.SetBounds(790, 7, 68, 26);
+  btnSvcRestart.Caption := 'Restart';
+  btnSvcRestart.Hint := 'Restart selected Windows service';
+  btnSvcRestart.ShowHint := True;
+  btnSvcRestart.OnClick := btnSvcRestartClick;
+
   lblServicesCount := TLabel.Create(Self);
   lblServicesCount.Parent := pnlServicesToolbar;
-  lblServicesCount.SetBounds(660, 12, 160, 20);
+  lblServicesCount.SetBounds(868, 12, 160, 20);
   lblServicesCount.Caption := '0 services';
 
   lvServices := TListView.Create(Self);
@@ -709,6 +765,33 @@ begin
   lvServices.ColumnClick := True;
   {$ENDIF}
   lvServices.OnColumnClick := lvServicesColumnClick;
+
+  FServiceContextMenu := TPopupMenu.Create(Self);
+  SvcMenuItem := TMenuItem.Create(FServiceContextMenu);
+  SvcMenuItem.Caption := 'Start Service';
+  SvcMenuItem.OnClick := btnSvcStartClick;
+  FServiceContextMenu.Items.Add(SvcMenuItem);
+
+  SvcMenuItem := TMenuItem.Create(FServiceContextMenu);
+  SvcMenuItem.Caption := 'Stop Service';
+  SvcMenuItem.OnClick := btnSvcStopClick;
+  FServiceContextMenu.Items.Add(SvcMenuItem);
+
+  SvcMenuItem := TMenuItem.Create(FServiceContextMenu);
+  SvcMenuItem.Caption := 'Restart Service';
+  SvcMenuItem.OnClick := btnSvcRestartClick;
+  FServiceContextMenu.Items.Add(SvcMenuItem);
+
+  SvcMenuItem := TMenuItem.Create(FServiceContextMenu);
+  SvcMenuItem.Caption := '-';
+  FServiceContextMenu.Items.Add(SvcMenuItem);
+
+  SvcMenuItem := TMenuItem.Create(FServiceContextMenu);
+  SvcMenuItem.Caption := 'Refresh Services';
+  SvcMenuItem.OnClick := btnRefreshServicesClick;
+  FServiceContextMenu.Items.Add(SvcMenuItem);
+
+  lvServices.PopupMenu := FServiceContextMenu;
 
   Col := lvServices.Columns.Add;
   Col.Caption := 'Service Name';
@@ -871,9 +954,73 @@ end;
 
 procedure TMainForm.SetupContextMenu;
 var
-  Item: TMenuItem;
+  Item, SubMenu, PrioItem: TMenuItem;
 begin
   FContextMenu := TPopupMenu.Create(Self);
+
+  Item := TMenuItem.Create(FContextMenu);
+  Item.Caption := 'Inspect Process Details...' + #9 + 'Enter';
+  Item.Default := True;
+  Item.OnClick := mnuInspectClick;
+  FContextMenu.Items.Add(Item);
+
+  Item := TMenuItem.Create(FContextMenu);
+  Item.Caption := '-';
+  FContextMenu.Items.Add(Item);
+
+  SubMenu := TMenuItem.Create(FContextMenu);
+  SubMenu.Caption := 'Set Priority';
+  FContextMenu.Items.Add(SubMenu);
+
+  PrioItem := TMenuItem.Create(FContextMenu);
+  PrioItem.Caption := 'Realtime';
+  PrioItem.Tag := $00000100;
+  PrioItem.OnClick := mnuSetPriorityClick;
+  SubMenu.Add(PrioItem);
+
+  PrioItem := TMenuItem.Create(FContextMenu);
+  PrioItem.Caption := 'High';
+  PrioItem.Tag := $00000080;
+  PrioItem.OnClick := mnuSetPriorityClick;
+  SubMenu.Add(PrioItem);
+
+  PrioItem := TMenuItem.Create(FContextMenu);
+  PrioItem.Caption := 'Above Normal';
+  PrioItem.Tag := $00008000;
+  PrioItem.OnClick := mnuSetPriorityClick;
+  SubMenu.Add(PrioItem);
+
+  PrioItem := TMenuItem.Create(FContextMenu);
+  PrioItem.Caption := 'Normal';
+  PrioItem.Tag := $00000020;
+  PrioItem.OnClick := mnuSetPriorityClick;
+  SubMenu.Add(PrioItem);
+
+  PrioItem := TMenuItem.Create(FContextMenu);
+  PrioItem.Caption := 'Below Normal';
+  PrioItem.Tag := $00004000;
+  PrioItem.OnClick := mnuSetPriorityClick;
+  SubMenu.Add(PrioItem);
+
+  PrioItem := TMenuItem.Create(FContextMenu);
+  PrioItem.Caption := 'Idle (Low)';
+  PrioItem.Tag := $00000040;
+  PrioItem.OnClick := mnuSetPriorityClick;
+  SubMenu.Add(PrioItem);
+
+  Item := TMenuItem.Create(FContextMenu);
+  Item.Caption := 'Suspend Process';
+  Item.OnClick := mnuSuspendProcessClick;
+  FContextMenu.Items.Add(Item);
+
+  Item := TMenuItem.Create(FContextMenu);
+  Item.Caption := 'Resume Process';
+  Item.OnClick := mnuResumeProcessClick;
+  FContextMenu.Items.Add(Item);
+
+  Item := TMenuItem.Create(FContextMenu);
+  Item.Caption := '-';
+  FContextMenu.Items.Add(Item);
 
   Item := TMenuItem.Create(FContextMenu);
   Item.Caption := 'Copy Process Name';
@@ -939,6 +1086,304 @@ begin
      (lvProcesses.Selected.Index < FViewModel.FilteredProcesses.Count) then
   begin
     Result := FViewModel.FilteredProcesses[lvProcesses.Selected.Index];
+  end;
+end;
+
+function TMainForm.GetSelectedService: TServiceItem;
+begin
+  Result := nil;
+  if Assigned(lvServices) and Assigned(lvServices.Selected) and
+     (lvServices.Selected.Index >= 0) and
+     (lvServices.Selected.Index < FViewModel.Services.Count) then
+  begin
+    Result := FViewModel.Services[lvServices.Selected.Index];
+  end;
+end;
+
+procedure TMainForm.btnInspectProcClick(Sender: TObject);
+begin
+  ShowProcessDetailsDialog;
+end;
+
+procedure TMainForm.lvProcessesDblClick(Sender: TObject);
+begin
+  ShowProcessDetailsDialog;
+end;
+
+procedure TMainForm.mnuInspectClick(Sender: TObject);
+begin
+  ShowProcessDetailsDialog;
+end;
+
+procedure TMainForm.mnuSetPriorityClick(Sender: TObject);
+var
+  Proc: TProcessItem;
+  Mnu: TMenuItem;
+begin
+  if not (Sender is TMenuItem) then Exit;
+  Mnu := TMenuItem(Sender);
+  Proc := GetSelectedProcess;
+  if Proc = nil then
+  begin
+    lblFooterStatus.Caption := 'Select a process first to change its priority class';
+    lblFooterStatus.Font.Color := FColors.Warning;
+    Exit;
+  end;
+  FViewModel.SetProcessPriority(Proc.Id, Cardinal(Mnu.Tag), Mnu.Caption);
+end;
+
+procedure TMainForm.mnuSuspendProcessClick(Sender: TObject);
+var
+  Proc: TProcessItem;
+begin
+  Proc := GetSelectedProcess;
+  if Proc = nil then Exit;
+  if (Proc.Id <= 4) or (Proc.Id = GetCurrentProcessId) then
+  begin
+    MessageDlg('Protected Process',
+      Format('Process "%s" (PID: %d) cannot be suspended.', [Proc.Name, Proc.Id]),
+      mtWarning, [mbOK], 0);
+    Exit;
+  end;
+  FViewModel.SuspendResumeProcess(Proc.Id, True);
+end;
+
+procedure TMainForm.mnuResumeProcessClick(Sender: TObject);
+var
+  Proc: TProcessItem;
+begin
+  Proc := GetSelectedProcess;
+  if Proc = nil then Exit;
+  FViewModel.SuspendResumeProcess(Proc.Id, False);
+end;
+
+procedure TMainForm.btnSvcStartClick(Sender: TObject);
+var
+  Svc: TServiceItem;
+begin
+  Svc := GetSelectedService;
+  if Svc = nil then
+  begin
+    lblFooterStatus.Caption := 'Select a service from the table first';
+    lblFooterStatus.Font.Color := FColors.Warning;
+    Exit;
+  end;
+  FViewModel.ControlServiceByName(Svc.ServiceName, 0);
+end;
+
+procedure TMainForm.btnSvcStopClick(Sender: TObject);
+var
+  Svc: TServiceItem;
+begin
+  Svc := GetSelectedService;
+  if Svc = nil then
+  begin
+    lblFooterStatus.Caption := 'Select a service from the table first';
+    lblFooterStatus.Font.Color := FColors.Warning;
+    Exit;
+  end;
+  if MessageDlg('Stop Windows Service',
+    Format('Are you sure you want to stop service "%s" (%s)?', [Svc.DisplayName, Svc.ServiceName]),
+    mtConfirmation, [mbYes, mbNo], 0) = mrYes then
+  begin
+    FViewModel.ControlServiceByName(Svc.ServiceName, 1);
+  end;
+end;
+
+procedure TMainForm.btnSvcRestartClick(Sender: TObject);
+var
+  Svc: TServiceItem;
+begin
+  Svc := GetSelectedService;
+  if Svc = nil then
+  begin
+    lblFooterStatus.Caption := 'Select a service from the table first';
+    lblFooterStatus.Font.Color := FColors.Warning;
+    Exit;
+  end;
+  FViewModel.ControlServiceByName(Svc.ServiceName, 2);
+end;
+
+procedure TMainForm.ShowProcessDetailsDialog;
+var
+  Proc: TProcessItem;
+  Dlg: TForm;
+  PnlTop, PnlBottom: TPanel;
+  LblTitle, LblSub: TLabel;
+  MemoReport: TMemo;
+  BtnCopy, BtnClose: TButton;
+  Modules: TStringList;
+  Report: TStringList;
+  I, NetMatches, SvcMatches: Integer;
+  NetItem: TNetworkConnectionItem;
+  SvcItem: TServiceItem;
+begin
+  Proc := GetSelectedProcess;
+  if Proc = nil then
+  begin
+    lblFooterStatus.Caption := 'Select a process first to inspect details';
+    lblFooterStatus.Font.Color := FColors.Warning;
+    Exit;
+  end;
+
+  Report := TStringList.Create;
+  Modules := FViewModel.GetProcessModules(Proc.Id);
+  try
+    Report.Add('====================================================================');
+    Report.Add(Format('  PROCESS TELEMETRY & EXECUTION METADATA — %s (PID %d)', [Proc.Name, Proc.Id]));
+    Report.Add('====================================================================');
+    Report.Add(Format('  Process Name       : %s', [Proc.Name]));
+    Report.Add(Format('  Process ID (PID)   : %d', [Proc.Id]));
+    Report.Add(Format('  Parent PID         : %d', [Proc.ParentId]));
+    Report.Add(Format('  User Account       : %s', [Proc.UserName]));
+    Report.Add(Format('  Architecture       : %s', [Proc.Architecture]));
+    Report.Add(Format('  Priority Class     : %s', [Proc.PriorityText]));
+    Report.Add(Format('  Health Status      : %s', [TUIUtils.StatusToString(Proc.Status)]));
+    Report.Add(Format('  CPU Utilization    : %s', [TUIUtils.FormatPercent(Proc.CpuSharePercent)]));
+    Report.Add(Format('  Working Set (RAM)  : %s', [TUIUtils.FormatMegabytes(Proc.MemoryWorkingSetMB)]));
+    Report.Add(Format('  Disk I/O Rate      : %s', [TUIUtils.FormatRateKBps(Proc.DiskIoKBps)]));
+    Report.Add(Format('  Active Threads     : %d', [Proc.ThreadCount]));
+    if Proc.ImagePath <> '' then
+      Report.Add(Format('  Executable Path    : %s', [Proc.ImagePath]))
+    else
+      Report.Add('  Executable Path    : [Kernel / Protected System Image]');
+    Report.Add('');
+
+    Report.Add('====================================================================');
+    Report.Add('  ACTIVE TCP/UDP NETWORK ENDPOINTS FOR THIS PID');
+    Report.Add('====================================================================');
+    NetMatches := 0;
+    for I := 0 to FViewModel.NetworkConnections.Count - 1 do
+    begin
+      NetItem := FViewModel.NetworkConnections[I];
+      if NetItem.ProcessId = Proc.Id then
+      begin
+        Inc(NetMatches);
+        if NetItem.RemotePort > 0 then
+          Report.Add(Format('  [%s] %s:%d -> %s:%d (%s)',
+            [NetItem.Protocol, NetItem.LocalAddress, NetItem.LocalPort,
+             NetItem.RemoteAddress, NetItem.RemotePort, NetItem.State]))
+        else
+          Report.Add(Format('  [%s] %s:%d (%s)',
+            [NetItem.Protocol, NetItem.LocalAddress, NetItem.LocalPort, NetItem.State]));
+      end;
+    end;
+    if NetMatches = 0 then
+      Report.Add('  No active TCP/UDP sockets bound to this PID.');
+    Report.Add('');
+
+    Report.Add('====================================================================');
+    Report.Add('  HOSTED WINDOWS SERVICES FOR THIS PID');
+    Report.Add('====================================================================');
+    SvcMatches := 0;
+    for I := 0 to FViewModel.Services.Count - 1 do
+    begin
+      SvcItem := FViewModel.Services[I];
+      if SvcItem.ProcessId = Proc.Id then
+      begin
+        Inc(SvcMatches);
+        Report.Add(Format('  • %s (%s) — [%s]',
+          [SvcItem.ServiceName, SvcItem.DisplayName, SvcItem.StateString]));
+      end;
+    end;
+    if SvcMatches = 0 then
+      Report.Add('  No Windows services hosted in this process.');
+    Report.Add('');
+
+    Report.Add('====================================================================');
+    Report.Add(Format('  LOADED MODULES / DLLS (%d loaded)', [Modules.Count]));
+    Report.Add('====================================================================');
+    if Modules.Count > 0 then
+    begin
+      for I := 0 to Modules.Count - 1 do
+        Report.Add(Format('  [%3d] %s', [I + 1, Modules[I]]));
+    end
+    else
+      Report.Add('  [Module enumeration restricted by OS protection or kernel process]');
+
+    Dlg := TForm.CreateNew(Self);
+    try
+      Dlg.Caption := Format('Process Inspector — %s (PID %d)', [Proc.Name, Proc.Id]);
+      Dlg.Position := poMainFormCenter;
+      Dlg.Width := 740;
+      Dlg.Height := 540;
+      Dlg.Color := FColors.Background;
+      Dlg.Font.Name := 'Segoe UI';
+      Dlg.Font.Size := 9;
+
+      PnlTop := TPanel.Create(Dlg);
+      PnlTop.Parent := Dlg;
+      PnlTop.Align := alTop;
+      PnlTop.Height := 58;
+      PnlTop.BevelOuter := bvNone;
+      PnlTop.Color := FColors.Surface;
+
+      LblTitle := TLabel.Create(Dlg);
+      LblTitle.Parent := PnlTop;
+      LblTitle.SetBounds(16, 10, 680, 22);
+      LblTitle.Caption := Format('%s  (PID: %d  ·  %s  ·  Priority: %s)',
+        [Proc.Name, Proc.Id, Proc.Architecture, Proc.PriorityText]);
+      LblTitle.Font.Size := 11;
+      LblTitle.Font.Style := [fsBold];
+      LblTitle.Font.Color := FColors.TextPrimary;
+
+      LblSub := TLabel.Create(Dlg);
+      LblSub.Parent := PnlTop;
+      LblSub.SetBounds(16, 34, 680, 18);
+      LblSub.Caption := Format('CPU: %s   |   RAM: %s   |   Disk I/O: %s   |   Threads: %d   |   User: %s',
+        [TUIUtils.FormatPercent(Proc.CpuSharePercent),
+         TUIUtils.FormatMegabytes(Proc.MemoryWorkingSetMB),
+         TUIUtils.FormatRateKBps(Proc.DiskIoKBps),
+         Proc.ThreadCount, Proc.UserName]);
+      LblSub.Font.Size := 9;
+      LblSub.Font.Color := FColors.Accent;
+
+      PnlBottom := TPanel.Create(Dlg);
+      PnlBottom.Parent := Dlg;
+      PnlBottom.Align := alBottom;
+      PnlBottom.Height := 44;
+      PnlBottom.BevelOuter := bvNone;
+      PnlBottom.Color := FColors.Surface;
+
+      BtnCopy := TButton.Create(Dlg);
+      BtnCopy.Parent := PnlBottom;
+      BtnCopy.SetBounds(16, 8, 150, 28);
+      BtnCopy.Caption := 'Copy Full Report';
+      BtnCopy.ModalResult := mrYes;
+
+      BtnClose := TButton.Create(Dlg);
+      BtnClose.Parent := PnlBottom;
+      BtnClose.SetBounds(634, 8, 90, 28);
+      BtnClose.Anchors := [akTop, akRight];
+      BtnClose.Caption := 'Close';
+      BtnClose.Cancel := True;
+      BtnClose.Default := True;
+      BtnClose.ModalResult := mrOk;
+
+      MemoReport := TMemo.Create(Dlg);
+      MemoReport.Parent := Dlg;
+      MemoReport.Align := alClient;
+      MemoReport.BorderSpacing.Around := 12;
+      MemoReport.ReadOnly := True;
+      MemoReport.ScrollBars := ssBoth;
+      MemoReport.WordWrap := False;
+      MemoReport.Color := FColors.SurfaceCard;
+      MemoReport.Font.Name := 'Consolas';
+      MemoReport.Font.Size := 9;
+      MemoReport.Font.Color := FColors.TextPrimary;
+      MemoReport.Lines.Assign(Report);
+
+      if Dlg.ShowModal = mrYes then
+      begin
+        Clipboard.AsText := Report.Text;
+        lblFooterStatus.Caption := Format('Copied full diagnostic report for %s (PID %d)', [Proc.Name, Proc.Id]);
+      end;
+    finally
+      Dlg.Free;
+    end;
+  finally
+    Modules.Free;
+    Report.Free;
   end;
 end;
 
@@ -1009,8 +1454,9 @@ begin
   Proc := GetSelectedProcess;
   if Assigned(Proc) then
   begin
-    Clipboard.AsText := Format('%d,%s,%s,%s,%.2f,%s,%d',
-      [Proc.Id, Proc.Name, Proc.UserName, Proc.Architecture, Proc.MemoryWorkingSetMB, TUIUtils.StatusToString(Proc.Status), Proc.ThreadCount]);
+    Clipboard.AsText := Format('%d,%s,%s,%s,%.2f,%.1f,%s,%d',
+      [Proc.Id, Proc.Name, Proc.UserName, Proc.Architecture, Proc.MemoryWorkingSetMB,
+       Proc.DiskIoKBps, TUIUtils.StatusToString(Proc.Status), Proc.ThreadCount]);
     lblFooterStatus.Caption := Format('Copied record for: %s (PID %d)', [Proc.Name, Proc.Id]);
   end;
 end;
@@ -1020,6 +1466,11 @@ begin
   if Key = VK_DELETE then
   begin
     TerminateSelectedProcess;
+    Key := 0;
+  end
+  else if (Key = VK_RETURN) and lvProcesses.Focused then
+  begin
+    ShowProcessDetailsDialog;
     Key := 0;
   end
   else if (ssCtrl in Shift) and (Key = Word('F')) then
@@ -1270,7 +1721,16 @@ begin
   pbCardDisk.Invalidate;
   pbCardUptime.Invalidate;
 
-  lblFooterTime.Caption := 'Updated: ' + FormatDateTime('hh:nn:ss', AMetrics.Timestamp);
+  lblFooterTime.Caption := Format('Net: ↓ %s  ↑ %s   |   Updated: %s',
+    [TUIUtils.FormatRateKBps(AMetrics.NetDownloadKBps),
+     TUIUtils.FormatRateKBps(AMetrics.NetUploadKBps),
+     FormatDateTime('hh:nn:ss', AMetrics.Timestamp)]);
+
+  if Assigned(lblNetworkCount) and Assigned(lvNetwork) then
+    lblNetworkCount.Caption := Format('%d connections   ·   ↓ %s   ↑ %s',
+      [lvNetwork.Items.Count,
+       TUIUtils.FormatRateKBps(AMetrics.NetDownloadKBps),
+       TUIUtils.FormatRateKBps(AMetrics.NetUploadKBps)]);
 end;
 
 procedure TMainForm.OnProcessesUpdated(const AProcesses: TProcessList);
@@ -1330,6 +1790,7 @@ begin
   Item.SubItems.Add(ProcItem.Architecture);
   Item.SubItems.Add(TUIUtils.FormatPercent(ProcItem.CpuSharePercent));
   Item.SubItems.Add(TUIUtils.FormatMegabytes(ProcItem.MemoryWorkingSetMB));
+  Item.SubItems.Add(TUIUtils.FormatRateKBps(ProcItem.DiskIoKBps));
   Item.SubItems.Add(TUIUtils.StatusToString(ProcItem.Status));
   Item.SubItems.Add(IntToStr(ProcItem.ThreadCount));
   Item.SubItems.Add(ProcItem.ImagePath);
@@ -1412,9 +1873,9 @@ var
   ProcItem: TProcessItem;
 begin
   if (Item = nil) or (Item.Index < 0) or (Item.Index >= FViewModel.FilteredProcesses.Count) then Exit;
-  // SubItem comes 1-based from the Win32 notification: 6 = "Health Status"
-  // (0 = PID caption, 1 = name, 2 = user, 3 = arch, 4 = CPU, 5 = RAM, 6 = status)
-  if SubItem = 6 then
+  // SubItem comes 1-based from the Win32 notification: 7 = "Health Status"
+  // (0 = PID caption, 1 = name, 2 = user, 3 = arch, 4 = CPU, 5 = RAM, 6 = Disk I/O, 7 = status)
+  if SubItem = 7 then
   begin
     ProcItem := FViewModel.FilteredProcesses[Item.Index];
     Sender.Canvas.Font.Color := TUIUtils.StatusToColor(ProcItem.Status, FColors);

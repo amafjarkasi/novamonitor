@@ -108,11 +108,24 @@ begin
     Svc := TMetricsService.Create;
     Exp := TExportService.Create;
 
-    // --- TerminateProcessById security guard tests ---
-    WriteLn('Testing Process Termination Guards...');
+    // --- TerminateProcessById / Priority / Suspend security guard tests ---
+    WriteLn('Testing Process Security Guards & Module Enumeration...');
     Check('terminate: PID 0 (Idle) guarded', not Svc.TerminateProcessById(0));
     Check('terminate: PID 4 (System) guarded', not Svc.TerminateProcessById(4));
     Check('terminate: PID CurrentProcess guarded', not Svc.TerminateProcessById(GetCurrentProcessId));
+    Check('priority: PID 0 guarded', not Svc.SetProcessPriorityById(0, $00000020));
+    Check('priority: PID 4 guarded', not Svc.SetProcessPriorityById(4, $00000020));
+    Check('suspend: PID 0 guarded', not Svc.SuspendResumeProcessById(0, True));
+    Check('suspend: PID 4 guarded', not Svc.SuspendResumeProcessById(4, True));
+    Check('suspend: PID CurrentProcess guarded', not Svc.SuspendResumeProcessById(GetCurrentProcessId, True));
+    Check('format: FormatRateKBps zero', TUIUtils.FormatRateKBps(0.0) = '0.0 KB/s');
+    Check('format: FormatRateKBps MB/s', Pos('MB/s', TUIUtils.FormatRateKBps(2048.0)) > 0);
+    Strs := Svc.GetProcessModules(GetCurrentProcessId);
+    try
+      Check('modules: current process has loaded DLLs', Strs.Count > 2);
+    finally
+      Strs.Free;
+    end;
 
     // --- Polling Interval Tests ---
     WriteLn('Testing Polling Interval Dynamic Control...');
@@ -129,6 +142,8 @@ begin
     Check('snapshot: used <= total memory', Snap.UsedPhysicalMB <= Snap.TotalPhysicalMB);
     Check('snapshot: disk total > 0', Snap.TotalDiskGB > 0);
     Check('snapshot: disk pct in [0..100]', (Snap.DiskUsagePercent >= 0) and (Snap.DiskUsagePercent <= 100));
+    Check('snapshot: net download >= 0', Snap.NetDownloadKBps >= 0);
+    Check('snapshot: net upload >= 0', Snap.NetUploadKBps >= 0);
 
     // --- process enumeration (first scan = CPU baseline, shares all 0) ---
     Procs := Svc.CollectProcesses;
@@ -218,14 +233,15 @@ begin
         Check('vm: filtered processes loaded', VM.FilteredProcesses.Count > 0);
         Check('vm: cpu history populated', VM.CpuHistory.Count > 0);
         Check('vm: ram history populated', VM.RamHistory.Count > 0);
+        Check('vm: disk history populated', VM.DiskHistory.Count > 0);
 
         // Search Filter
         VM.SetSearchFilter('svchost');
         Check('vm: search filter applied', VM.FilteredProcesses.Count > 0);
         VM.SetSearchFilter('');
 
-        // Sorting across all 9 columns:
-        // 0=PID, 1=Name, 2=User, 3=Arch, 4=CPU%, 5=RAM, 6=Health, 7=Threads, 8=Path
+        // Sorting across all 10 columns:
+        // 0=PID, 1=Name, 2=User, 3=Arch, 4=CPU%, 5=RAM, 6=Disk I/O, 7=Health, 8=Threads, 9=Path
         Check('vm: default sort column is 5 (Working Set RAM)', VM.SortColumn = 5);
         Check('vm: default sort order is descending by RAM',
           (VM.FilteredProcesses.Count < 2) or
@@ -249,13 +265,17 @@ begin
         Check('vm: sort by Working Set (RAM) desc',
           (VM.FilteredProcesses.Count < 2) or
           (VM.FilteredProcesses[0].MemoryWorkingSetMB >= VM.FilteredProcesses[VM.FilteredProcesses.Count - 1].MemoryWorkingSetMB));
-        VM.SetSort(6); // Sort by Health Status desc
+        VM.SetSort(6); // Sort by Disk I/O desc
+        Check('vm: sort by Disk I/O desc',
+          (VM.FilteredProcesses.Count < 2) or
+          (VM.FilteredProcesses[0].DiskIoKBps >= VM.FilteredProcesses[VM.FilteredProcesses.Count - 1].DiskIoKBps));
+        VM.SetSort(7); // Sort by Health Status desc
         Check('vm: sort by Health Status', VM.FilteredProcesses.Count > 0);
-        VM.SetSort(7); // Sort by Active Threads desc
+        VM.SetSort(8); // Sort by Active Threads desc
         Check('vm: sort by Active Threads desc',
           (VM.FilteredProcesses.Count < 2) or
           (VM.FilteredProcesses[0].ThreadCount >= VM.FilteredProcesses[VM.FilteredProcesses.Count - 1].ThreadCount));
-        VM.SetSort(8); // Sort by Image Path asc
+        VM.SetSort(9); // Sort by Image Path asc
         Check('vm: sort by Image Path', VM.FilteredProcesses.Count > 0);
 
         // Quick-Filter Modes

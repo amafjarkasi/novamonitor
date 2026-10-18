@@ -64,6 +64,8 @@ type
     FreeDiskGB: Single;
     UsedDiskGB: Single;
     DiskUsagePercent: Single;
+    NetDownloadKBps: Single;
+    NetUploadKBps: Single;
     UptimeSeconds: UInt64;
     ActiveProcessCount: Integer;
     ThreadCount: Integer;
@@ -81,12 +83,14 @@ type
     FName: string;
     FMemoryWorkingSetMB: Single;
     FCpuSharePercent: Single;
+    FDiskIoKBps: Single;
     FStatus: TItemStatus;
     FThreadCount: Integer;
     FDescription: string;
     FImagePath: string;
     FUserName: string;
     FArchitecture: string;
+    FPriorityText: string;
     FTreeLevel: Integer;
   public
     constructor Create(const AId: Cardinal; const AName: string;
@@ -101,12 +105,14 @@ type
     property Name: string read FName write FName;
     property MemoryWorkingSetMB: Single read FMemoryWorkingSetMB write FMemoryWorkingSetMB;
     property CpuSharePercent: Single read FCpuSharePercent write FCpuSharePercent;
+    property DiskIoKBps: Single read FDiskIoKBps write FDiskIoKBps;
     property Status: TItemStatus read FStatus write FStatus;
     property ThreadCount: Integer read FThreadCount write FThreadCount;
     property Description: string read FDescription write FDescription;
     property ImagePath: string read FImagePath write FImagePath;
     property UserName: string read FUserName write FUserName;
     property Architecture: string read FArchitecture write FArchitecture;
+    property PriorityText: string read FPriorityText write FPriorityText;
     property TreeLevel: Integer read FTreeLevel write FTreeLevel;
   end;
 
@@ -196,6 +202,10 @@ type
     function CollectNetworkConnections: TNetworkConnectionList;
     function CollectServices: TServiceList;
     function TerminateProcessById(const AProcessId: Cardinal): Boolean;
+    function SetProcessPriorityById(const AProcessId: Cardinal; const APriorityClass: Cardinal): Boolean;
+    function SuspendResumeProcessById(const AProcessId: Cardinal; const ASuspend: Boolean): Boolean;
+    function ControlWindowsService(const AServiceName: string; const AAction: Integer): Boolean;
+    function GetProcessModules(const AProcessId: Cardinal): TStringList;
   end;
 
   /// <summary>
@@ -269,6 +279,7 @@ begin
   FName := AName;
   FMemoryWorkingSetMB := AMemoryMB;
   FCpuSharePercent := ACpuShare;
+  FDiskIoKBps := 0.0;
   FStatus := AStatus;
   FThreadCount := AThreads;
   FDescription := ADesc;
@@ -276,6 +287,7 @@ begin
   FImagePath := APath;
   FUserName := AUser;
   FArchitecture := AArch;
+  FPriorityText := 'Normal';
   FTreeLevel := 0;
 end;
 
