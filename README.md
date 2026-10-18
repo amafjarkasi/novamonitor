@@ -18,29 +18,39 @@
 
 ## 📸 Key Features
 
-- **Asynchronous Telemetry Polling**: Dedicated background worker thread (`TMetricsWorkerThread`) continuously gathers kernel/user CPU times, memory load, disk capacity, and active process metrics with zero GUI stutter or message loop blockage.
+- **Asynchronous Telemetry Polling & Dynamic Interval Control**:
+  - Dedicated background worker thread (`TMetricsWorkerThread`) continuously gathers kernel/user CPU times, memory load, disk capacity, network adapter throughput, and active process metrics with zero GUI stutter or message loop blockage.
+  - Live **Polling Interval Selector** (`0.5s Fast`, `1.0s`, `1.5s Normal`, `2.5s`, `5.0s Eco`) dynamically adjusts the worker thread sleep cadence in real time.
+- **Process Inspector Detail Modal (`Enter` / Double-Click / `Inspect...`)**:
+  - Deep-dive diagnostic modal displaying complete process execution metadata (PID, Parent PID, Priority Class, User Account, Architecture, Health Status, CPU %, Working Set RAM, Disk I/O Rate, Active Threads, and Executable Path).
+  - Automatically correlates and lists **Active TCP/UDP Network Endpoints** bound to that PID, **Hosted Windows Services** running inside that PID, and all **Loaded Modules / DLLs** enumerated via `EnumProcessModules` and `GetModuleFileNameExW` (`psapi.dll`), with one-click **Copy Full Report**.
+- **Process Priority & Suspend/Resume Manager**:
+  - Right-click any process to adjust its live Windows scheduling priority (**Set Priority**: `Realtime`, `High`, `Above Normal`, `Normal`, `Below Normal`, `Idle (Low)`) via `SetPriorityClass` (`kernel32.dll`).
+  - Instantly **Suspend Process** or **Resume Process** execution threads using native `NtSuspendProcess` and `NtResumeProcess` (`ntdll.dll`) APIs, protected by safety guards on kernel processes (`PID <= 4`) and `NovaMonitor.exe`.
+- **Live Per-Process Disk I/O & Protected Kernel Telemetry**:
+  - Tracks per-process `ReadTransferCount + WriteTransferCount` deltas across polling ticks via `NtQuerySystemInformation(SystemProcessInformation)` (`ntdll.dll`) and `GetProcessIoCounters` (`kernel32.dll`), displaying live **`Disk I/O`** rates (`KB/s` / `MB/s`) in a sortable column.
+  - Queries kernel process records directly via `NtQuerySystemInformation` so protected system processes (`System`, `Registry`, `Memory Compression`, `MsMpEng.exe`, `csrss.exe`) report accurate Working Set RAM, CPU %, Disk I/O, and `NT AUTHORITY\SYSTEM` ownership without requiring elevation.
 - **Hierarchical Process Tree View**:
-  - Automatically reconstructs process parentage from `ParentProcessID` (`th32ParentProcessID`) to display parent and child subprocesses grouped hierarchically (e.g., browser orchestrator and renderer subprocesses).
+  - Automatically reconstructs process parentage from `ParentProcessID` (`th32ParentProcessID`) to display parent and child subprocesses grouped hierarchically.
   - Clean virtual indentation rendering (`StringOfChar(' ', Level * 3) + '└─ '`) with instant toggle between **Tree View** and **Flat View** via the table toolbar button.
 - **Process Security Owner, Executable Path & Architecture**:
-  - Queries full executable disk path (`QueryFullProcessImageNameW`), binary architecture (`64-bit` vs `32-bit` via `IsWow64Process`), and Windows security account user/domain (`NT AUTHORITY\SYSTEM`, `DOMAIN\User`) via `OpenProcessToken` and `LookupAccountSidW`.
-  - Intelligent PID-based metadata cache (`FProcMetaCache`) ensuring zero performance degradation (~10-15 ms total scan time across 370+ processes).
+  - Queries full executable disk path (`QueryFullProcessImageNameW`), binary architecture (`x64` vs `x86` via `IsWow64Process`), and Windows security account user/domain (`NT AUTHORITY\SYSTEM`, `DOMAIN\User`) via `OpenProcessToken` and `LookupAccountSidW`.
+  - Intelligent PID-based metadata cache (`FProcMetaCache`) ensuring zero performance degradation (~15 ms total scan time across 340+ processes).
   - Context menu actions: "Copy Image Path", "Copy User Account", and **Open File Location** (instantly opens Windows File Explorer with the selected executable highlighted).
-- **Live Network Sockets Tab (TCP/UDP)**:
-  - Dedicated sidebar navigation tab monitoring active system connections using zero-dependency direct Win32 IP Helper API bindings (`GetExtendedTcpTable`, `GetExtendedUdpTable` in `iphlpapi.dll`).
-  - Displays Local Address:Port, Remote Endpoint:Port, Protocol (TCP/UDP), Connection State (`LISTEN`, `ESTABLISHED`, `TIME_WAIT`, `CLOSE_WAIT`), and owning Process Name & PID.
-  - Sub-millisecond instant search filter across endpoints, ports, protocols, and process names.
-- **Windows Services Tab**:
-  - Dedicated sidebar navigation tab enumerating installed and active Win32 system services via non-elevated Service Control Manager APIs (`EnumServicesStatusExW` in `advapi32.dll`).
-  - Correlates Service Name, Display Name, State (`Running`, `Stopped`, `Paused`), owning PID, and Service Type.
-  - Dedicated quick-filter chips (`[All]`, `[Running]`, `[Stopped]`) plus real-time search.
-- **Real-Time Rolling Sparkline Graphs**:
-  - Live 30-sample ring buffer (`THistoryBuffer`) dynamically tracks CPU utilization and RAM memory pressure trends.
-  - Custom anti-aliased GDI sparkline rendering (`TUIUtils.DrawSparkline`) featuring adaptive peak scaling, translucent tinted area fill (`TUIUtils.BlendColor`), and pulsing current-value indicator dots.
+- **Live Network Sockets Tab (TCP/UDP) & Bandwidth Throughput**:
+  - Dedicated sidebar navigation tab monitoring active system connections using direct Win32 IP Helper API bindings (`GetExtendedTcpTable`, `GetExtendedUdpTable`, and `GetIfTable` in `iphlpapi.dll`).
+  - Displays live adapter download/upload throughput (**`Net: ↓ KB/s  ↑ KB/s`**) in both the Network toolbar and status footer.
+  - Displays Local Address:Port, Remote Endpoint:Port, Protocol (TCP/UDP), Connection State (`LISTEN`, `ESTABLISHED`, `TIME_WAIT`, `CLOSE_WAIT`), and owning Process Name & PID with full column sorting and instant search filtering.
+- **Interactive Windows Services Tab (`Start` / `Stop` / `Restart`)**:
+  - Dedicated sidebar navigation tab enumerating installed and active Win32 system services via Service Control Manager APIs (`EnumServicesStatusExW` in `advapi32.dll`).
+  - Interactive **`Start`**, **`Stop`**, and **`Restart`** toolbar buttons and right-click context menu powered by `OpenServiceW`, `StartServiceW`, and `ControlService` (`advapi32.dll`).
+  - Correlates Service Name, Display Name, State (`Running`, `Stopped`, `Paused`), owning PID, and Service Type with quick-filter chips (`[All]`, `[Running]`, `[Stopped]`), column sorting, and real-time search.
+- **Hardware-Accelerated GDI+ Anti-Aliased Cards & Rolling Sparklines**:
+  - Live 30-sample ring buffers (`THistoryBuffer`) dynamically track CPU utilization, RAM memory pressure, System Storage usage, and System Uptime vitality trends.
+  - Hardware-accelerated **GDI+ (`gdiplus.dll`)** anti-aliased rendering (`SmoothingModeAntiAlias`) for smooth rounded cards, progress bars, translucent gradient sparkline fills, and dual-tone storage capacity bars.
+  - Native Win32 `LVS_EX_DOUBLEBUFFER` extended listview style and `DwmSetWindowAttribute` (`dwmapi.dll`) immersive dark/light title bar integration eliminate polling flicker.
 - **Instant Process Termination ("End Task")**:
-  - Safely terminate selected processes via the toolbar **End Task** button, context menu, or <kbd>Del</kbd> key.
-  - Built-in security guards preventing termination of critical system processes (PID 0 Idle, PID 4 System, and NovaMonitor itself).
-  - Explicit confirmation dialog protecting against accidental data loss, with immediate list removal upon successful termination.
+  - Safely terminate selected processes via the toolbar **End Task** button, context menu, or <kbd>Del</kbd> key, with built-in security guards preventing termination of critical system processes.
 - **Top Resource Consumer Quick-Filter Chips**:
   - One-click filter chips to instantly isolate workload bottlenecks:
     - `[All]`: View all active processes (<kbd>Ctrl</kbd>+<kbd>1</kbd>).
@@ -50,30 +60,19 @@
 - **"Always on Top" Window Pinning**:
   - Quick-toggle **Pin** button in the header actions (<kbd>Ctrl</kbd>+<kbd>P</kbd>) to keep NovaMonitor floating above full-screen IDEs and games while diagnosing performance spikes.
 - **High-Performance Virtual Process Inspector**:
-  - Employs a virtual `TListView` (`OwnerData = True`) capable of displaying 350+ processes with instant virtual painting and near-zero memory footprint (~10 ms scan cost).
-  - Live per-process CPU % share calculation and memory working set metrics.
-  - Interactive multi-column sorting (PID, Name, User, Arch, CPU %, RAM, Health Status, Threads, Path) with persistent direction indicators.
-  - Sub-millisecond instant search filter with multi-field matching (PID, process name, image path, user account, architecture).
-- **Fluent & Modern UI Aesthetics**:
-  - Custom GDI double-buffered canvas rendering (`TUIUtils.DrawCard`, `TUIUtils.DrawProgressBar`, `TUIUtils.DrawSparkline`) for clean rounded metric cards and progress tracks.
-  - One-click **Dark / Light Theme** toggle with immediate visual palette switching.
-  - Per-Monitor v2 High-DPI awareness for crisp vector and font scaling at 100%, 125%, 150%, and 200% scaling.
+  - Employs a virtual `TListView` (`OwnerData = True`) capable of displaying 350+ processes with flicker-free virtual painting and near-zero memory footprint.
+  - Interactive 10-column sorting (`PID`, `Process Name`, `User Account`, `Arch`, `CPU %`, `Working Set (RAM)`, `Disk I/O`, `Health Status`, `Active Threads`, `Image Path`) with persistent sort direction indicators (`▲`/`▼`).
 - **Desktop Ergonomics & Keyboard Accelerators**:
+  - <kbd>Enter</kbd> or **Double-Click** on a process row to open the **Process Inspector Detail Modal**.
   - <kbd>Ctrl</kbd>+<kbd>F</kbd> to instantly focus and select search filter; <kbd>Esc</kbd> to clear search.
   - <kbd>Ctrl</kbd>+<kbd>P</kbd> to toggle Always on Top window pinning.
   - <kbd>Ctrl</kbd>+<kbd>1</kbd>..<kbd>4</kbd> to switch quick-filter chips.
   - <kbd>Del</kbd> to end selected task.
   - <kbd>Ctrl</kbd>+<kbd>T</kbd> to toggle Dark/Light theme.
   - <kbd>Ctrl</kbd>+<kbd>E</kbd> to trigger telemetry export.
-  - Right-click context menu on process inspector to copy Process Name, PID, full CSV record, Image Path, User Account, Open File Location, or end task.
-- **System Tray Integration**:
+- **System Tray Integration & Data Export**:
   - Optional minimize-to-system-tray behavior (`TTrayIcon`) with single-click restore.
-- **Comprehensive Data Export**:
   - One-click snapshot reporting to structured **JSON** and tabular **CSV** formats.
-- **Bulletproof Memory & Concurrency Safety**:
-  - Atomic process list pointer swaps to eliminate race conditions during background worker scans.
-  - Boundary-checked QuickSort partitioning with duplicate-key protection.
-  - Nil-safe Win32 custom-draw message filtering and full exception trapping.
 
 ---
 
@@ -86,22 +85,23 @@ peaceful-meitner/
 ├── src/
 │   ├── Common/
 │   │   ├── Nova.Types.pas              # Domain models (TSystemMetrics, TProcessItem) and service contracts
-│   │   └── Nova.Utils.pas              # Dark/Light palettes, formatters, and GDI canvas card drawing
+│   │   └── Nova.Utils.pas              # Dark/Light palettes, rate formatters, and GDI+ anti-aliased rendering
 │   ├── Services/
-│   │   ├── Nova.Service.Metrics.pas    # Thread-safe Windows API polling and process enumeration
+│   │   ├── Nova.Service.Metrics.pas    # Thread-safe Win32/NTAPI polling, process/service control, and module inspection
 │   │   └── Nova.Service.Exporter.pas   # Structured JSON and CSV telemetry serialization
 │   ├── ViewModels/
-│   │   └── Nova.ViewModel.Main.pas     # MVVM presentation state, filtering, sorting, and command logic
+│   │   └── Nova.ViewModel.Main.pas     # MVVM presentation state, 10-column sorting, filtering, and command logic
 │   └── Views/
-│       ├── Nova.View.Main.pas          # Visual form implementation, event handlers, and owner-draw logic
+│       ├── Nova.View.Main.pas          # Visual form implementation, Process Inspector modal, and custom draw logic
 │       ├── Nova.View.Main.dfm          # Embarcadero Delphi VCL form definition
 │       └── Nova.View.Main.lfm          # Lazarus LCL form definition
 ├── tests/
 │   ├── novatest.lpi                    # Automated test runner project configuration
-│   └── novatest.lpr                    # Comprehensive unit tests for metrics, processes, sorting, and export
+│   └── novatest.lpr                    # Comprehensive unit tests for metrics, processes, sorting, guards, and export
 ├── resources/
 │   ├── logo.svg                        # Vector banner and logo
-│   ├── app.ico                         # Windows application icon
+│   ├── header_logo_32.png              # Transparent RGBA header emblem
+│   ├── app.ico                         # Multi-resolution Windows application icon (16px-256px)
 │   └── app.manifest                    # Windows Per-Monitor v2 High-DPI manifest
 ├── NovaMonitor.dpr                     # Delphi main application entrypoint
 ├── NovaMonitor.dproj                   # Delphi MSBuild project file
@@ -115,10 +115,11 @@ peaceful-meitner/
 
 ## 🧪 Automated Testing
 
-NovaMonitor includes an automated test suite verifying all telemetry calculations, sorting behaviors, and report serializers:
+NovaMonitor includes a 74-assertion automated test suite verifying all telemetry calculations, security guards, GDI+ rendering, sorting behaviors, and report serializers:
 
 ```cmd
-# Run test suite
+# Build and run test suite
+lazbuild -B tests\novatest.lpi
 tests\lib\novatest.exe
 ```
 
@@ -126,27 +127,18 @@ tests\lib\novatest.exe
 - `PASS: history: initial count is 0 and empty ToArray`
 - `PASS: history: circular buffer capped at 30 and maintains chronological order`
 - `PASS: ui: BlendColor mid-point calculation`
-- `PASS: terminate: PID 0 (Idle) security guard`
-- `PASS: terminate: PID 4 (System) security guard`
-- `PASS: terminate: PID CurrentProcess security guard`
-- `PASS: snapshot: CPU in [0..100]`
-- `PASS: snapshot: memory total > 0, used <= total`
-- `PASS: snapshot: disk total > 0, disk pct in [0..100]`
-- `PASS: processes: count > 10, sorted by memory desc (~10 ms scan average)`
-- `PASS: processes: non-zero CPU shares after repeated scans`
-- `PASS: export: JSON succeeds and validates schema`
-- `PASS: export: CSV succeeds with matching process count`
-- `PASS: vm: initialized metrics, processes, and history buffers`
-- `PASS: vm: search filter and multi-column sorting (PID, Name, CPU, RAM)`
-- `PASS: vm: filter mode fmHeavyMemory (>400MB)`
-- `PASS: vm: filter mode fmActiveCpu (>2%)`
-- `PASS: vm: filter mode fmCriticalOnly (Warning / Critical alerts)`
-- `PASS: vm: filter mode fmAll reset`
-- `PASS: network: connections collected (TCP/UDP with valid local ports)`
-- `PASS: services: services collected (active Win32 running services)`
-- `PASS: tree: hierarchical tree mode with child processes and depth levels`
-- `PASS: metadata: process image paths and Windows user/domain security accounts`
-- `PASS: vm: network and services views populated with real-time filtering`
+- `PASS: gdi+: DrawCard, DrawProgressBar, DrawBadge, and DrawSparkline execute cleanly`
+- `PASS: terminate / priority / suspend: PID 0 (Idle), PID 4 (System), and CurrentProcess security guards`
+- `PASS: format: FormatRateKBps zero and MB/s scaling`
+- `PASS: modules: current process loaded DLL enumeration`
+- `PASS: interval: dynamic polling interval control (1500ms -> 500ms -> 2500ms)`
+- `PASS: snapshot: CPU in [0..100], memory total > 0, disk pct in [0..100], net download/upload >= 0`
+- `PASS: processes: count > 10, sorted by memory desc (~15 ms scan average), non-zero CPU shares`
+- `PASS: export: JSON and CSV succeed and validate schema`
+- `PASS: vm: initialized metrics, processes, and CPU/RAM/Disk history buffers`
+- `PASS: vm: 10-column sorting (PID, Name, User, Arch, CPU %, RAM, Disk I/O, Health Status, Threads, Image Path)`
+- `PASS: vm: quick-filter modes (fmHeavyMemory, fmActiveCpu, fmCriticalOnly, fmAll)`
+- `PASS: network & services: live collection, status filtering, and hierarchical process tree view`
 
 ---
 
@@ -181,7 +173,7 @@ msbuild NovaMonitor.dproj /t:Build /p:Configuration=Release /p:Platform=Win64
 ## 💡 Modern Object Pascal Best Practices Demonstrated
 
 1. **Thread Synchronization**: Worker threads poll metrics asynchronously and dispatch updates to the main GUI thread using thread-safe synchronization queues.
-2. **Virtual List Controls**: Rather than instantiating thousands of visual `TListItem` controls, the list uses virtual owner-data streaming to maintain zero allocation overhead during live updates.
+2. **Virtual List Controls**: Rather than instantiating thousands of visual `TListItem` controls, the list uses virtual owner-data streaming with native `LVS_EX_DOUBLEBUFFER` to maintain zero allocation overhead and zero flicker during live updates.
 3. **Atomic Swaps**: Process telemetry lists swap references atomically before freeing superseded datasets, guaranteeing that visual draw cycles never encounter invalid pointers.
 4. **Clean Abstraction**: Form units contain zero telemetry collection logic, binding exclusively through events and ViewModel interfaces.
 
