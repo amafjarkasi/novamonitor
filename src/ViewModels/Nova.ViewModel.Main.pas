@@ -92,6 +92,10 @@ type
     function KillProcess(const AProcessId: Cardinal): Boolean;
     function SetProcessPriority(const AProcessId: Cardinal; const APriorityClass: Cardinal; const APriorityName: string): Boolean;
     function SuspendResumeProcess(const AProcessId: Cardinal; const ASuspend: Boolean): Boolean;
+    function GetProcessAffinity(const AProcessId: Cardinal; out AProcessMask, ASystemMask: NativeUInt): Boolean;
+    function SetProcessAffinity(const AProcessId: Cardinal; const AProcessMask: NativeUInt): Boolean;
+    function RunNewTask(const ACommand: string; const ARunAsAdmin: Boolean): Boolean;
+    function RestartProcess(const AProcessId: Cardinal): Boolean;
     function ControlServiceByName(const AServiceName: string; const AAction: Integer): Boolean;
     function GetProcessModules(const AProcessId: Cardinal): TStringList;
     function ExportReport(const AFilePath: string): Boolean;
@@ -434,13 +438,16 @@ begin
               Continue;
         end;
 
-        // Extended multi-field search filter (PID, Name, User, Path, Arch)
+        // Extended multi-field search filter (PID, Name, User, Path, Arch, CommandLine, Publisher, Description)
         if (FSearchFilter = '') or
            (Pos(FSearchFilter, LowerCase(Item.Name)) > 0) or
            (Pos(FSearchFilter, IntToStr(Item.Id)) > 0) or
            (Pos(FSearchFilter, LowerCase(Item.UserName)) > 0) or
            (Pos(FSearchFilter, LowerCase(Item.ImagePath)) > 0) or
-           (Pos(FSearchFilter, LowerCase(Item.Architecture)) > 0) then
+           (Pos(FSearchFilter, LowerCase(Item.Architecture)) > 0) or
+           (Pos(FSearchFilter, LowerCase(Item.CommandLine)) > 0) or
+           (Pos(FSearchFilter, LowerCase(Item.CompanyName)) > 0) or
+           (Pos(FSearchFilter, LowerCase(Item.Description)) > 0) then
         begin
           FFilteredProcesses.Add(Item);
         end;
@@ -469,13 +476,16 @@ begin
             Continue;
       end;
 
-      // Extended multi-field search filter (PID, Name, User, Path, Arch)
+      // Extended multi-field search filter (PID, Name, User, Path, Arch, CommandLine, Publisher, Description)
       if (FSearchFilter = '') or
          (Pos(FSearchFilter, LowerCase(Item.Name)) > 0) or
          (Pos(FSearchFilter, IntToStr(Item.Id)) > 0) or
          (Pos(FSearchFilter, LowerCase(Item.UserName)) > 0) or
          (Pos(FSearchFilter, LowerCase(Item.ImagePath)) > 0) or
-         (Pos(FSearchFilter, LowerCase(Item.Architecture)) > 0) then
+         (Pos(FSearchFilter, LowerCase(Item.Architecture)) > 0) or
+         (Pos(FSearchFilter, LowerCase(Item.CommandLine)) > 0) or
+         (Pos(FSearchFilter, LowerCase(Item.CompanyName)) > 0) or
+         (Pos(FSearchFilter, LowerCase(Item.Description)) > 0) then
       begin
         FFilteredProcesses.Add(Item);
       end;
@@ -726,6 +736,63 @@ begin
     end
     else if Assigned(FOnStatusMessage) then
       FOnStatusMessage(Format('Failed to control service "%s" (Administrator privileges required or service dependent).', [AServiceName]), True);
+  end;
+end;
+
+function TMainViewModel.GetProcessAffinity(const AProcessId: Cardinal; out AProcessMask, ASystemMask: NativeUInt): Boolean;
+begin
+  Result := False;
+  AProcessMask := 0;
+  ASystemMask := 0;
+  if Assigned(FMetricsService) then
+    Result := FMetricsService.GetProcessAffinityById(AProcessId, AProcessMask, ASystemMask);
+end;
+
+function TMainViewModel.SetProcessAffinity(const AProcessId: Cardinal; const AProcessMask: NativeUInt): Boolean;
+begin
+  Result := False;
+  if Assigned(FMetricsService) then
+  begin
+    Result := FMetricsService.SetProcessAffinityById(AProcessId, AProcessMask);
+    if Result then
+    begin
+      if Assigned(FOnStatusMessage) then
+        FOnStatusMessage(Format('Process %d CPU affinity mask updated (0x%x).', [AProcessId, AProcessMask]), False);
+    end
+    else if Assigned(FOnStatusMessage) then
+      FOnStatusMessage(Format('Failed to update CPU affinity for PID %d (Access Denied or Invalid Mask).', [AProcessId]), True);
+  end;
+end;
+
+function TMainViewModel.RunNewTask(const ACommand: string; const ARunAsAdmin: Boolean): Boolean;
+begin
+  Result := False;
+  if Assigned(FMetricsService) then
+  begin
+    Result := FMetricsService.RunNewTask(ACommand, ARunAsAdmin);
+    if Result then
+    begin
+      if Assigned(FOnStatusMessage) then
+        FOnStatusMessage(Format('Launched new task: %s', [ACommand]), False);
+    end
+    else if Assigned(FOnStatusMessage) then
+      FOnStatusMessage(Format('Failed to launch task: %s', [ACommand]), True);
+  end;
+end;
+
+function TMainViewModel.RestartProcess(const AProcessId: Cardinal): Boolean;
+begin
+  Result := False;
+  if Assigned(FMetricsService) then
+  begin
+    Result := FMetricsService.RestartProcessById(AProcessId);
+    if Result then
+    begin
+      if Assigned(FOnStatusMessage) then
+        FOnStatusMessage(Format('Process %d restarted successfully.', [AProcessId]), False);
+    end
+    else if Assigned(FOnStatusMessage) then
+      FOnStatusMessage(Format('Failed to restart PID %d (Access Denied or System Protected).', [AProcessId]), True);
   end;
 end;
 

@@ -5,8 +5,8 @@
 <p align="center">
   <a href="#-feature-breakdown"><img src="https://img.shields.io/badge/Architecture-MVVM%20%7C%20Clean-6366f1?style=for-the-badge" alt="Architecture" /></a>
   <a href="#-building--running"><img src="https://img.shields.io/badge/Compiler-Delphi%20%7C%20Free%20Pascal%203.2.2-38bdf8?style=for-the-badge" alt="Compiler" /></a>
-  <a href="#-performance--benchmarks"><img src="https://img.shields.io/badge/Scan%20Latency-15ms%20(340%2B%20Procs)-10b981?style=for-the-badge" alt="Scan Latency" /></a>
-  <a href="#-automated-testing"><img src="https://img.shields.io/badge/Tests-74%2F74%20Passing-34d399?style=for-the-badge" alt="Tests" /></a>
+  <a href="#-performance--benchmarks"><img src="https://img.shields.io/badge/Scan%20Latency-15--31ms%20(340%2B%20Procs)-10b981?style=for-the-badge" alt="Scan Latency" /></a>
+  <a href="#-automated-testing"><img src="https://img.shields.io/badge/Tests-85%2F85%20Passing-34d399?style=for-the-badge" alt="Tests" /></a>
   <a href="#-fluent-desktop-ux--ergonomics"><img src="https://img.shields.io/badge/Display-Per--Monitor%20v2%20High--DPI-f59e0b?style=for-the-badge" alt="High-DPI" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-f43f5e?style=for-the-badge" alt="License" /></a>
 </p>
@@ -37,6 +37,7 @@ To make it easy to see everything NovaMonitor provides at a glance, features are
 | Capability | Technical Implementation | What You See in the UI |
 | :--- | :--- | :--- |
 | **CPU Utilization & Rolling Sparkline** | `GetSystemTimes` kernel/user delta tracking + 30-sample `THistoryBuffer` | Live CPU % across logical cores with adaptive GDI+ gradient sparkline |
+| **Per-Logical-Core CPU Breakdown** | `NtQuerySystemInformation(SystemProcessorPerformanceInformation)` (`Class 8`) | Displays logical core count on the CPU card; **click the CPU card** to open a live per-core utilization dialog (`CPU Core #0` .. `CPU Core #N`) |
 | **Memory Load & Pressure Tracking** | `GlobalMemoryStatusEx` physical working set & available memory | Used vs. Total RAM (`GB`/`MB`) with dynamic threshold color shifts (`70%` warn / `85%` danger) |
 | **System Storage Capacity** | `GetDiskFreeSpaceExW` volume telemetry | Free GB, Used GB (`%`), Total GB, and dual-tone capacity progress bar |
 | **System Uptime & Thread Vitality** | `GetTickCount64` + aggregate process/thread counters | Formatted uptime (`Xd Xh Xm`), active process count, and total system thread count |
@@ -49,8 +50,11 @@ To make it easy to see everything NovaMonitor provides at a glance, features are
 | Capability | Technical Implementation | What You See in the UI |
 | :--- | :--- | :--- |
 | **Protected Kernel Process Telemetry** | `NtQuerySystemInformation(SystemProcessInformation)` in `ntdll.dll` | Accurate RAM, CPU %, Disk I/O, and `NT AUTHORITY\SYSTEM` owner for `System`, `Registry`, `MsMpEng.exe`, and `Memory Compression` without requiring Admin elevation |
+| **Full Process Command-Line Extraction** | `NtQueryInformationProcess(ProcessCommandLineInformation)` (`Class 60`) | Extracts full launch arguments (`--type=renderer`, scripts, flags) using only `PROCESS_QUERY_LIMITED_INFORMATION`; searchable & copyable via right-click **`Copy Command Line`** |
+| **Handle, GDI & USER Leak Detector** | Kernel `HandleCount` + `GetGuiResources` (`GR_GDIOBJECTS`, `GR_USEROBJECTS` in `user32.dll`) | Tracks per-process kernel handles, GDI objects, and USER window objects in the Process Inspector modal with automatic `[! Potential Leak]` warnings |
+| **Digital Publisher & File Version Info** | `GetFileVersionInfoW` + `VerQueryValueW` (`version.dll`) cached per PID | Extracts `CompanyName` (Digital Publisher), `FileDescription`, and `FileVersion` once per PID; searchable directly from the search bar |
 | **Per-Process Disk I/O Rate** | Kernel `ReadTransferCount + WriteTransferCount` + `GetProcessIoCounters` | Dedicated **`Disk I/O`** column displaying live `KB/s` and `MB/s` transfer rates per process |
-| **Process Inspector Detail Modal** | `EnumProcessModules` + `GetModuleFileNameExW` (`psapi.dll`) + PID correlation | Press <kbd>Enter</kbd>, **Double-Click** a row, or click **`Inspect...`** to view full metadata, bound TCP/UDP sockets, hosted Windows Services, and all loaded `.dll` modules |
+| **Process Inspector Detail Modal** | `EnumProcessModules` + `GetModuleFileNameExW` (`psapi.dll`) + PID correlation | Press <kbd>Enter</kbd>, **Double-Click** a row, or click **`Inspect...`** to view full metadata, command line, handles/GDI/USER counts, bound TCP/UDP sockets, hosted Windows Services, and all loaded `.dll` modules |
 | **Hierarchical Process Tree View** | Parent-child graph reconstruction via `th32ParentProcessID` | One-click **`Tree View`** toggle indents child processes (`└─`) under their parent orchestrator |
 | **Security Owner, Arch & Path Cache** | `OpenProcessToken`, `LookupAccountSidW`, `IsWow64Process`, `QueryFullProcessImageNameW` | Displays `DOMAIN\User`, `x64`/`x86` architecture, and full executable path with `O(1)` PID caching |
 | **10-Column Interactive Sorting** | Custom QuickSort with tie-breaking across all 10 columns | Click any header (`PID`, `Name`, `User`, `Arch`, `CPU %`, `RAM`, `Disk I/O`, `Status`, `Threads`, `Path`) with `▲`/`▼` indicators |
@@ -62,6 +66,9 @@ To make it easy to see everything NovaMonitor provides at a glance, features are
 > [!IMPORTANT]
 > Critical system processes (`PID 0` Idle, `PID 4` System, and `NovaMonitor.exe` itself) are protected by hard-coded security guards in `TMetricsService` to prevent accidental system instability.
 
+- **CPU Core Affinity Manager**: Right-click any process $\rightarrow$ **Set CPU Affinity...** to open an interactive per-core checkbox grid (`CPU 0` .. `CPU N`) and pin CPU-intensive workloads to specific logical processors via `GetProcessAffinityMask` and `SetProcessAffinityMask`.
+- **"Run New Task" Launcher (with UAC Admin Elevation)**: Click **`Run Task...`** in the toolbar or press <kbd>Ctrl</kbd>+<kbd>N</kbd> to launch any program, shell command, or script—with an optional **"Create this task with administrative privileges"** checkbox powered by `ShellExecuteExW` (`runas` verb).
+- **One-Click Process Restart**: Right-click any user process $\rightarrow$ **Restart Process** to cleanly terminate and immediately relaunch its executable image.
 - **Process Priority Manager**: Right-click any process $\rightarrow$ **Set Priority** to switch scheduling class on the fly (`Realtime`, `High`, `Above Normal`, `Normal`, `Below Normal`, `Idle (Low)`) via `SetPriorityClass`.
 - **Suspend & Resume Process**: Right-click any process to freeze (**Suspend Process**) or unfreeze (**Resume Process**) all threads via native `NtSuspendProcess` / `NtResumeProcess` (`ntdll.dll`).
 - **Instant Task Termination**: End unresponsive processes via the **`End Task`** button, context menu, or <kbd>Del</kbd> key with confirmation safeguards.
@@ -92,7 +99,8 @@ To make it easy to see everything NovaMonitor provides at a glance, features are
 
 | Shortcut | Action | Context |
 | :--- | :--- | :--- |
-| <kbd>Enter</kbd> / **Double-Click** | Open **Process Inspector Detail Modal** (Metadata, Sockets, Services, DLLs) | Process Table |
+| <kbd>Enter</kbd> / **Double-Click** | Open **Process Inspector Detail Modal** (Metadata, Command Line, Handles/GDI, Sockets, Services, DLLs) | Process Table |
+| <kbd>Ctrl</kbd> + <kbd>N</kbd> | Open **Run New Task** launcher dialog (with optional UAC Admin elevation) | Global |
 | <kbd>Del</kbd> | Terminate selected process (**End Task** with confirmation) | Process Table |
 | <kbd>Ctrl</kbd> + <kbd>F</kbd> | Focus & select active search box | Global |
 | <kbd>Esc</kbd> | Clear search filter or return focus to process table | Search Box |

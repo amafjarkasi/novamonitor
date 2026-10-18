@@ -53,6 +53,8 @@ var
   SvcList: TServiceList;
   TestBmp: TBitmap;
   HasTcp, HasLocalPort, HasRunning, HasChildLevel, HasImagePath, HasUser: Boolean;
+  HasCmdLine, HasHandles, HasPublisher: Boolean;
+  ProcMask, SysMask: NativeUInt;
 begin
   OutDir := ExtractFilePath(ParamStr(0));
   try
@@ -118,6 +120,12 @@ begin
     Check('suspend: PID 0 guarded', not Svc.SuspendResumeProcessById(0, True));
     Check('suspend: PID 4 guarded', not Svc.SuspendResumeProcessById(4, True));
     Check('suspend: PID CurrentProcess guarded', not Svc.SuspendResumeProcessById(GetCurrentProcessId, True));
+    Check('affinity: PID 0 guarded', not Svc.GetProcessAffinityById(0, ProcMask, SysMask));
+    Check('affinity: current process mask retrieved', Svc.GetProcessAffinityById(GetCurrentProcessId, ProcMask, SysMask) and (ProcMask <> 0) and (SysMask <> 0));
+    Check('affinity: empty mask (0) rejected', not Svc.SetProcessAffinityById(GetCurrentProcessId, 0));
+    Check('restart: PID 0 guarded', not Svc.RestartProcessById(0));
+    Check('restart: PID CurrentProcess guarded', not Svc.RestartProcessById(GetCurrentProcessId));
+    Check('run_task: empty command guarded', not Svc.RunNewTask('   ', False));
     Check('format: FormatRateKBps zero', TUIUtils.FormatRateKBps(0.0) = '0.0 KB/s');
     Check('format: FormatRateKBps MB/s', Pos('MB/s', TUIUtils.FormatRateKBps(2048.0)) > 0);
     Strs := Svc.GetProcessModules(GetCurrentProcessId);
@@ -138,6 +146,7 @@ begin
     // --- system snapshot ---
     Snap := Svc.CollectSnapshot;
     Check('snapshot: CPU in [0..100]', (Snap.CpuUsagePercent >= 0) and (Snap.CpuUsagePercent <= 100));
+    Check('snapshot: per-core CPU array populated', Length(Snap.CoreUsages) > 0);
     Check('snapshot: memory total > 0', Snap.TotalPhysicalMB > 0);
     Check('snapshot: used <= total memory', Snap.UsedPhysicalMB <= Snap.TotalPhysicalMB);
     Check('snapshot: disk total > 0', Snap.TotalDiskGB > 0);
@@ -364,13 +373,22 @@ begin
 
         HasImagePath := False;
         HasUser := False;
+        HasCmdLine := False;
+        HasHandles := False;
+        HasPublisher := False;
         for I := 0 to VM.FilteredProcesses.Count - 1 do
         begin
           if VM.FilteredProcesses[I].ImagePath <> '' then HasImagePath := True;
           if VM.FilteredProcesses[I].UserName <> '' then HasUser := True;
+          if VM.FilteredProcesses[I].CommandLine <> '' then HasCmdLine := True;
+          if VM.FilteredProcesses[I].HandleCount > 0 then HasHandles := True;
+          if VM.FilteredProcesses[I].CompanyName <> '' then HasPublisher := True;
         end;
         Check('metadata: contains processes with image path', HasImagePath);
         Check('metadata: contains processes with user account', HasUser);
+        Check('metadata: contains processes with command line via NtQueryInformationProcess(60)', HasCmdLine);
+        Check('metadata: contains processes with kernel HandleCount > 0', HasHandles);
+        Check('metadata: contains processes with publisher CompanyName via version.dll', HasPublisher);
 
         // Network & Services ViewModel integration
         VM.SetActiveView(avNetwork);

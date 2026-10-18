@@ -56,6 +56,7 @@ type
   /// </summary>
   TSystemMetrics = record
     CpuUsagePercent: Single;
+    CoreUsages: TSingleDynArray;
     MemoryLoadPercent: Cardinal;
     TotalPhysicalMB: UInt64;
     AvailablePhysicalMB: UInt64;
@@ -86,7 +87,13 @@ type
     FDiskIoKBps: Single;
     FStatus: TItemStatus;
     FThreadCount: Integer;
+    FHandleCount: Cardinal;
+    FGdiObjects: Cardinal;
+    FUserObjects: Cardinal;
     FDescription: string;
+    FCompanyName: string;
+    FFileVersion: string;
+    FCommandLine: string;
     FImagePath: string;
     FUserName: string;
     FArchitecture: string;
@@ -108,7 +115,13 @@ type
     property DiskIoKBps: Single read FDiskIoKBps write FDiskIoKBps;
     property Status: TItemStatus read FStatus write FStatus;
     property ThreadCount: Integer read FThreadCount write FThreadCount;
+    property HandleCount: Cardinal read FHandleCount write FHandleCount;
+    property GdiObjects: Cardinal read FGdiObjects write FGdiObjects;
+    property UserObjects: Cardinal read FUserObjects write FUserObjects;
     property Description: string read FDescription write FDescription;
+    property CompanyName: string read FCompanyName write FCompanyName;
+    property FileVersion: string read FFileVersion write FFileVersion;
+    property CommandLine: string read FCommandLine write FCommandLine;
     property ImagePath: string read FImagePath write FImagePath;
     property UserName: string read FUserName write FUserName;
     property Architecture: string read FArchitecture write FArchitecture;
@@ -204,6 +217,10 @@ type
     function TerminateProcessById(const AProcessId: Cardinal): Boolean;
     function SetProcessPriorityById(const AProcessId: Cardinal; const APriorityClass: Cardinal): Boolean;
     function SuspendResumeProcessById(const AProcessId: Cardinal; const ASuspend: Boolean): Boolean;
+    function GetProcessAffinityById(const AProcessId: Cardinal; out AProcessMask, ASystemMask: NativeUInt): Boolean;
+    function SetProcessAffinityById(const AProcessId: Cardinal; const AProcessMask: NativeUInt): Boolean;
+    function RunNewTask(const ACommand: string; const ARunAsAdmin: Boolean): Boolean;
+    function RestartProcessById(const AProcessId: Cardinal): Boolean;
     function ControlWindowsService(const AServiceName: string; const AAction: Integer): Boolean;
     function GetProcessModules(const AProcessId: Cardinal): TStringList;
   end;

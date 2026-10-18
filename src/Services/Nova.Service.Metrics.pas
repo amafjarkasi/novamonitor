@@ -51,6 +51,10 @@ type
     ImagePath: string;
     UserName: string;
     Architecture: string;
+    CommandLine: string;
+    Description: string;
+    CompanyName: string;
+    FileVersion: string;
   end;
 
   /// <summary>
@@ -65,6 +69,9 @@ type
     FPrevKernelTime: Int64;
     FPrevUserTime: Int64;
     FHasPrevCpuTime: Boolean;
+    FPrevCoreIdle: array of Int64;
+    FPrevCoreTotal: array of Int64;
+    FHasPrevCoreSample: Boolean;
     // Network interface byte counters for throughput calculation
     FPrevNetInBytes: UInt64;
     FPrevNetOutBytes: UInt64;
@@ -81,6 +88,7 @@ type
     FPrevProcIoTick: UInt64;
 
     function CalculateCpuUsage: Single;
+    function CalculateCoreUsages: TSingleDynArray;
   public
     constructor Create;
     destructor Destroy; override;
@@ -99,6 +107,10 @@ type
     function TerminateProcessById(const AProcessId: Cardinal): Boolean;
     function SetProcessPriorityById(const AProcessId: Cardinal; const APriorityClass: Cardinal): Boolean;
     function SuspendResumeProcessById(const AProcessId: Cardinal; const ASuspend: Boolean): Boolean;
+    function GetProcessAffinityById(const AProcessId: Cardinal; out AProcessMask, ASystemMask: NativeUInt): Boolean;
+    function SetProcessAffinityById(const AProcessId: Cardinal; const AProcessMask: NativeUInt): Boolean;
+    function RunNewTask(const ACommand: string; const ARunAsAdmin: Boolean): Boolean;
+    function RestartProcessById(const AProcessId: Cardinal): Boolean;
     function ControlWindowsService(const AServiceName: string; const AAction: Integer): Boolean;
     function GetProcessModules(const AProcessId: Cardinal): TStringList;
   end;
@@ -197,6 +209,7 @@ begin
   FLock := TCriticalSection.Create;
   FWorker := nil;
   FHasPrevCpuTime := False;
+  FHasPrevCoreSample := False;
   FPrevIdleTime := 0;
   FPrevKernelTime := 0;
   FPrevUserTime := 0;
@@ -420,6 +433,51 @@ type
     IoBytes: Int64;
     BasePriority: LongInt;
     SessionId: DWORD;
+    HandleCount: DWORD;
+  end;
+
+  TNtProcessorPerfInfo = record
+    IdleTime: Int64;
+    KernelTime: Int64;
+    UserTime: Int64;
+    DpcTime: Int64;
+    InterruptTime: Int64;
+    InterruptCount: DWORD;
+    Reserved: DWORD;
+  end;
+
+  TNtUnicodeString = record
+    Length: Word;
+    MaximumLength: Word;
+    {$IFDEF CPU64}
+    Pad: DWORD;
+    {$ENDIF}
+    Buffer: PWideChar;
+  end;
+  PNtUnicodeString = ^TNtUnicodeString;
+
+  TLangAndCodePage = packed record
+    wLanguage: Word;
+    wCodePage: Word;
+  end;
+  PLangAndCodePage = ^TLangAndCodePage;
+
+  TShellExecuteInfoW = record
+    cbSize: DWORD;
+    fMask: ULONG;
+    Wnd: HWND;
+    lpVerb: PWideChar;
+    lpFile: PWideChar;
+    lpParameters: PWideChar;
+    lpDirectory: PWideChar;
+    nShow: Integer;
+    hInstApp: HINST;
+    lpIDList: Pointer;
+    lpClass: PWideChar;
+    hkeyClass: HKEY;
+    dwHotKey: DWORD;
+    hIconOrMonitor: THandle;
+    hProcess: THandle;
   end;
 
 const
@@ -431,7 +489,14 @@ const
   PROCESS_VM_READ = $0010;
   TH32CS_SNAPPROCESS = $2;
   SystemProcessInformation = 5;
+  SystemProcessorPerformanceInformation = 8;
+  ProcessCommandLineInformation = 60;
   STATUS_INFO_LENGTH_MISMATCH = LongInt($C0000004);
+  STATUS_BUFFER_TOO_SMALL = LongInt($C0000023);
+  STATUS_BUFFER_OVERFLOW = LongInt($80000005);
+
+  GR_GDIOBJECTS = 0;
+  GR_USEROBJECTS = 1;
 
   TCP_TABLE_OWNER_PID_ALL = 5;
   UDP_TABLE_OWNER_PID = 1;
@@ -469,7 +534,15 @@ function IsWow64Process(hProcess: THandle; var Wow64Process: BOOL): BOOL; stdcal
 function GetProcessIoCounters(hProcess: THandle; var lpIoCounters: TWinIoCounters): BOOL; stdcall; external 'kernel32.dll' name 'GetProcessIoCounters';
 function GetPriorityClass(hProcess: THandle): DWORD; stdcall; external 'kernel32.dll' name 'GetPriorityClass';
 function SetPriorityClass(hProcess: THandle; dwPriorityClass: DWORD): BOOL; stdcall; external 'kernel32.dll' name 'SetPriorityClass';
+function GetProcessAffinityMask(hProcess: THandle; var lpProcessAffinityMask, lpSystemAffinityMask: NativeUInt): BOOL; stdcall; external 'kernel32.dll' name 'GetProcessAffinityMask';
+function SetProcessAffinityMask(hProcess: THandle; dwProcessAffinityMask: NativeUInt): BOOL; stdcall; external 'kernel32.dll' name 'SetProcessAffinityMask';
+function GetGuiResources(hProcess: THandle; uiFlags: DWORD): DWORD; stdcall; external 'user32.dll' name 'GetGuiResources';
+function GetFileVersionInfoSizeW(lptstrFilename: PWideChar; var lpdwHandle: DWORD): DWORD; stdcall; external 'version.dll' name 'GetFileVersionInfoSizeW';
+function GetFileVersionInfoW(lptstrFilename: PWideChar; dwHandle, dwLen: DWORD; lpData: Pointer): BOOL; stdcall; external 'version.dll' name 'GetFileVersionInfoW';
+function VerQueryValueW(pBlock: Pointer; lpSubBlock: PWideChar; var lplpBuffer: Pointer; var puLen: UINT): BOOL; stdcall; external 'version.dll' name 'VerQueryValueW';
+function ShellExecuteExW(var lpExecInfo: TShellExecuteInfoW): BOOL; stdcall; external 'shell32.dll' name 'ShellExecuteExW';
 function NtQuerySystemInformation(SystemInformationClass: DWORD; SystemInformation: Pointer; SystemInformationLength: DWORD; var ReturnLength: DWORD): LongInt; stdcall; external 'ntdll.dll' name 'NtQuerySystemInformation';
+function NtQueryInformationProcess(ProcessHandle: THandle; ProcessInformationClass: DWORD; ProcessInformation: Pointer; ProcessInformationLength: DWORD; var ReturnLength: DWORD): LongInt; stdcall; external 'ntdll.dll' name 'NtQueryInformationProcess';
 function NtSuspendProcess(ProcessHandle: THandle): LongInt; stdcall; external 'ntdll.dll' name 'NtSuspendProcess';
 function NtResumeProcess(ProcessHandle: THandle): LongInt; stdcall; external 'ntdll.dll' name 'NtResumeProcess';
 
@@ -509,6 +582,94 @@ begin
   end;
 end;
 
+function GetProcessCommandLine(const AProcessHandle: THandle): string;
+var
+  RetLen, BufSize: DWORD;
+  Status: LongInt;
+  Buf: Pointer;
+  UStr: PNtUnicodeString;
+  WS: WideString;
+begin
+  Result := '';
+  RetLen := 0;
+  BufSize := 2048;
+  GetMem(Buf, BufSize);
+  try
+    Status := NtQueryInformationProcess(AProcessHandle, ProcessCommandLineInformation, Buf, BufSize, RetLen);
+    if ((Status = STATUS_INFO_LENGTH_MISMATCH) or (Status = STATUS_BUFFER_TOO_SMALL) or (Status = STATUS_BUFFER_OVERFLOW)) and
+       (RetLen > BufSize) and (RetLen < 65536) then
+    begin
+      FreeMem(Buf);
+      BufSize := RetLen + 64;
+      GetMem(Buf, BufSize);
+      Status := NtQueryInformationProcess(AProcessHandle, ProcessCommandLineInformation, Buf, BufSize, RetLen);
+    end;
+    if Status = 0 then
+    begin
+      UStr := PNtUnicodeString(Buf);
+      if (UStr^.Length > 0) and Assigned(UStr^.Buffer) then
+      begin
+        SetString(WS, UStr^.Buffer, UStr^.Length div SizeOf(WideChar));
+        Result := Trim(string(WS));
+      end;
+    end;
+  finally
+    FreeMem(Buf);
+  end;
+end;
+
+procedure GetExecutableVersionMeta(const AImagePath: string; out ADesc, ACompany, AVersion: string);
+var
+  Dummy, VerSize: DWORD;
+  VerBuf, ValPtr: Pointer;
+  ValLen: UINT;
+  WPath, SubBlock: WideString;
+  Trans: PLangAndCodePage;
+  LangHex: string;
+begin
+  ADesc := '';
+  ACompany := '';
+  AVersion := '';
+  if (AImagePath = '') or (Pos(':', AImagePath) = 0) or (not FileExists(AImagePath)) then
+    Exit;
+
+  WPath := WideString(AImagePath);
+  Dummy := 0;
+  VerSize := GetFileVersionInfoSizeW(PWideChar(WPath), Dummy);
+  if (VerSize = 0) or (VerSize > 262144) then Exit;
+
+  GetMem(VerBuf, VerSize);
+  try
+    if GetFileVersionInfoW(PWideChar(WPath), 0, VerSize, VerBuf) then
+    begin
+      LangHex := '040904B0';
+      ValPtr := nil;
+      ValLen := 0;
+      SubBlock := '\VarFileInfo\Translation';
+      if VerQueryValueW(VerBuf, PWideChar(SubBlock), ValPtr, ValLen) and
+         Assigned(ValPtr) and (ValLen >= SizeOf(TLangAndCodePage)) then
+      begin
+        Trans := PLangAndCodePage(ValPtr);
+        LangHex := IntToHex(Trans^.wLanguage, 4) + IntToHex(Trans^.wCodePage, 4);
+      end;
+
+      SubBlock := WideString('\StringFileInfo\' + LangHex + '\FileDescription');
+      if VerQueryValueW(VerBuf, PWideChar(SubBlock), ValPtr, ValLen) and Assigned(ValPtr) and (ValLen > 0) then
+        ADesc := Trim(WideCharToString(PWideChar(ValPtr)));
+
+      SubBlock := WideString('\StringFileInfo\' + LangHex + '\CompanyName');
+      if VerQueryValueW(VerBuf, PWideChar(SubBlock), ValPtr, ValLen) and Assigned(ValPtr) and (ValLen > 0) then
+        ACompany := Trim(WideCharToString(PWideChar(ValPtr)));
+
+      SubBlock := WideString('\StringFileInfo\' + LangHex + '\FileVersion');
+      if VerQueryValueW(VerBuf, PWideChar(SubBlock), ValPtr, ValLen) and Assigned(ValPtr) and (ValLen > 0) then
+        AVersion := Trim(WideCharToString(PWideChar(ValPtr)));
+    end;
+  finally
+    FreeMem(VerBuf);
+  end;
+end;
+
 procedure CollectKernelProcStats(const AMap: TDictionary<Cardinal, TKernelProcStat>);
 var
   BufSize, RetLen: DWORD;
@@ -542,6 +703,7 @@ begin
           Stat.IoBytes := Cur^.ReadTransferCount + Cur^.WriteTransferCount;
           Stat.BasePriority := Cur^.BasePriority;
           Stat.SessionId := Cur^.SessionId;
+          Stat.HandleCount := Cur^.HandleCount;
           AMap.AddOrSetValue(Cardinal(Cur^.UniqueProcessId), Stat);
         end;
         if Cur^.NextEntryOffset = 0 then Break;
@@ -593,6 +755,67 @@ begin
       CloseHandle(HToken);
     end;
   end;
+end;
+{$ENDIF}
+
+function TMetricsService.CalculateCoreUsages: TSingleDynArray;
+{$IFDEF MSWINDOWS}
+var
+  CoreBuf: array[0..127] of TNtProcessorPerfInfo;
+  RetLen: DWORD;
+  CoreCount, I: Integer;
+  TotalNow, IdleNow, TotalDiff, IdleDiff: Int64;
+  Pct: Single;
+begin
+  Result := nil;
+  RetLen := 0;
+  if NtQuerySystemInformation(SystemProcessorPerformanceInformation, @CoreBuf[0], SizeOf(CoreBuf), RetLen) = 0 then
+  begin
+    CoreCount := RetLen div SizeOf(TNtProcessorPerfInfo);
+    if (CoreCount <= 0) or (CoreCount > 128) then Exit;
+    SetLength(Result, CoreCount);
+
+    if (not FHasPrevCoreSample) or (Length(FPrevCoreIdle) <> CoreCount) then
+    begin
+      SetLength(FPrevCoreIdle, CoreCount);
+      SetLength(FPrevCoreTotal, CoreCount);
+      for I := 0 to CoreCount - 1 do
+      begin
+        FPrevCoreIdle[I] := CoreBuf[I].IdleTime;
+        FPrevCoreTotal[I] := CoreBuf[I].KernelTime + CoreBuf[I].UserTime;
+        Result[I] := 0.0;
+      end;
+      FHasPrevCoreSample := True;
+    end
+    else
+    begin
+      for I := 0 to CoreCount - 1 do
+      begin
+        IdleNow := CoreBuf[I].IdleTime;
+        TotalNow := CoreBuf[I].KernelTime + CoreBuf[I].UserTime;
+        TotalDiff := TotalNow - FPrevCoreTotal[I];
+        IdleDiff := IdleNow - FPrevCoreIdle[I];
+        Pct := 0.0;
+        if TotalDiff > 0 then
+        begin
+          Pct := ((TotalDiff - IdleDiff) * 100.0) / TotalDiff;
+          if Pct < 0.0 then Pct := 0.0;
+          if Pct > 100.0 then Pct := 100.0;
+        end;
+        Result[I] := Pct;
+        FPrevCoreIdle[I] := IdleNow;
+        FPrevCoreTotal[I] := TotalNow;
+      end;
+    end;
+  end;
+end;
+{$ELSE}
+begin
+  SetLength(Result, 4);
+  Result[0] := 12.0;
+  Result[1] := 8.0;
+  Result[2] := 15.0;
+  Result[3] := 10.0;
 end;
 {$ENDIF}
 
@@ -661,6 +884,7 @@ begin
   FLock.Enter;
   try
     Result.CpuUsagePercent := CalculateCpuUsage;
+    Result.CoreUsages := CalculateCoreUsages;
 
     MemStatus.dwLength := SizeOf(MemStatus);
     if GlobalMemoryStatusEx(MemStatus) then
@@ -765,7 +989,7 @@ var
   ProcTotal, TotalNow, TotalDelta, PrevProc: Int64;
   ProcIoBytes, PrevIo: Int64;
   CurIoTick, IoElapsedMs: UInt64;
-  PrioClass: DWORD;
+  PrioClass, HandlesCnt, GdiCnt, UserCnt: DWORD;
   BasePrio: LongInt;
   Meta: TProcessMeta;
   PathBuf: WideString;
@@ -811,6 +1035,9 @@ begin
           ProcTotal := 0;
           ProcIoBytes := 0;
           PrioClass := 0;
+          HandlesCnt := 0;
+          GdiCnt := 0;
+          UserCnt := 0;
           BasePrio := Entry.pcPriClassBase;
 
           if KernelStats.TryGetValue(ProcId, KStat) then
@@ -819,6 +1046,7 @@ begin
             ProcTotal := KStat.TotalTime;
             ProcIoBytes := KStat.IoBytes;
             BasePrio := KStat.BasePriority;
+            HandlesCnt := KStat.HandleCount;
           end;
 
           ProcHandle := OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, ProcId);
@@ -834,12 +1062,18 @@ begin
             if GetProcessIoCounters(ProcHandle, IoCounters) then
               ProcIoBytes := Int64(IoCounters.ReadTransferCount + IoCounters.WriteTransferCount);
             PrioClass := GetPriorityClass(ProcHandle);
+            GdiCnt := GetGuiResources(ProcHandle, GR_GDIOBJECTS);
+            UserCnt := GetGuiResources(ProcHandle, GR_USEROBJECTS);
 
             if not FProcMetaCache.TryGetValue(ProcId, Meta) then
             begin
               Meta.ImagePath := '';
               Meta.UserName := '';
               Meta.Architecture := '64-bit';
+              Meta.CommandLine := '';
+              Meta.Description := '';
+              Meta.CompanyName := '';
+              Meta.FileVersion := '';
 
               PathLen := 512;
               SetLength(PathBuf, PathLen);
@@ -858,8 +1092,13 @@ begin
               Meta.UserName := GetProcessOwner(ProcHandle);
               if Meta.UserName = '' then
                 Meta.UserName := 'NT AUTHORITY\SYSTEM';
-              if Meta.ImagePath = '' then
+              Meta.CommandLine := GetProcessCommandLine(ProcHandle);
+              if Meta.ImagePath <> '' then
+                GetExecutableVersionMeta(Meta.ImagePath, Meta.Description, Meta.CompanyName, Meta.FileVersion)
+              else
                 Meta.ImagePath := ProcName;
+              if Meta.CommandLine = '' then
+                Meta.CommandLine := Meta.ImagePath;
               FProcMetaCache.AddOrSetValue(ProcId, Meta);
             end;
           finally
@@ -871,12 +1110,24 @@ begin
             begin
               Meta.UserName := 'NT AUTHORITY\SYSTEM';
               Meta.Architecture := '64-bit';
+              Meta.CompanyName := 'Microsoft Corporation';
+              Meta.FileVersion := 'OS Kernel';
               if ProcId = 4 then
-                Meta.ImagePath := 'ntoskrnl.exe'
+              begin
+                Meta.ImagePath := 'ntoskrnl.exe';
+                Meta.Description := 'NT Kernel & System';
+              end
               else if Pos('.', ProcName) = 0 then
-                Meta.ImagePath := '[System Kernel]'
+              begin
+                Meta.ImagePath := '[System Kernel]';
+                Meta.Description := 'Protected System Process';
+              end
               else
+              begin
                 Meta.ImagePath := ProcName;
+                Meta.Description := 'Protected Windows Service / Process';
+              end;
+              Meta.CommandLine := Meta.ImagePath;
               FProcMetaCache.AddOrSetValue(ProcId, Meta);
             end;
           end;
@@ -919,12 +1170,18 @@ begin
             CpuPct,
             Status,
             Entry.cntThreads,
-            '');
+            Meta.Description);
 
           Item.ParentId := Entry.th32ParentProcessID;
           Item.ImagePath := Meta.ImagePath;
           Item.UserName := Meta.UserName;
           Item.Architecture := Meta.Architecture;
+          Item.CommandLine := Meta.CommandLine;
+          Item.CompanyName := Meta.CompanyName;
+          Item.FileVersion := Meta.FileVersion;
+          Item.HandleCount := HandlesCnt;
+          Item.GdiObjects := GdiCnt;
+          Item.UserObjects := UserCnt;
           Item.DiskIoKBps := IoKBps;
           Item.PriorityText := PriorityClassToStr(PrioClass, BasePrio);
 
@@ -1066,6 +1323,178 @@ begin
     finally
       CloseHandle(HProc);
     end;
+  end;
+end;
+{$ELSE}
+begin
+  Result := False;
+end;
+{$ENDIF}
+
+function TMetricsService.GetProcessAffinityById(const AProcessId: Cardinal; out AProcessMask, ASystemMask: NativeUInt): Boolean;
+{$IFDEF MSWINDOWS}
+var
+  HProc: THandle;
+begin
+  Result := False;
+  AProcessMask := 0;
+  ASystemMask := 0;
+  if AProcessId <= 4 then Exit;
+  HProc := OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, AProcessId);
+  if HProc <> 0 then
+  begin
+    try
+      Result := GetProcessAffinityMask(HProc, AProcessMask, ASystemMask);
+    finally
+      CloseHandle(HProc);
+    end;
+  end;
+end;
+{$ELSE}
+begin
+  AProcessMask := $F;
+  ASystemMask := $F;
+  Result := True;
+end;
+{$ENDIF}
+
+function TMetricsService.SetProcessAffinityById(const AProcessId: Cardinal; const AProcessMask: NativeUInt): Boolean;
+{$IFDEF MSWINDOWS}
+var
+  HProc: THandle;
+begin
+  Result := False;
+  if (AProcessId <= 4) or (AProcessMask = 0) then Exit;
+  HProc := OpenProcess(PROCESS_SET_INFORMATION, False, AProcessId);
+  if HProc <> 0 then
+  begin
+    try
+      Result := SetProcessAffinityMask(HProc, AProcessMask);
+    finally
+      CloseHandle(HProc);
+    end;
+  end;
+end;
+{$ELSE}
+begin
+  Result := False;
+end;
+{$ENDIF}
+
+function TMetricsService.RunNewTask(const ACommand: string; const ARunAsAdmin: Boolean): Boolean;
+{$IFDEF MSWINDOWS}
+var
+  ExecInfo: TShellExecuteInfoW;
+  CmdTrim, FilePart, ParamPart: string;
+  WVerb, WFile, WParams: WideString;
+  SpacePos: Integer;
+begin
+  Result := False;
+  CmdTrim := Trim(ACommand);
+  if CmdTrim = '' then Exit;
+
+  if (Length(CmdTrim) > 1) and (CmdTrim[1] = '"') then
+  begin
+    Delete(CmdTrim, 1, 1);
+    SpacePos := Pos('"', CmdTrim);
+    if SpacePos > 0 then
+    begin
+      FilePart := Copy(CmdTrim, 1, SpacePos - 1);
+      ParamPart := Trim(Copy(CmdTrim, SpacePos + 1, MaxInt));
+    end
+    else
+    begin
+      FilePart := CmdTrim;
+      ParamPart := '';
+    end;
+  end
+  else if FileExists(CmdTrim) then
+  begin
+    FilePart := CmdTrim;
+    ParamPart := '';
+  end
+  else
+  begin
+    SpacePos := Pos(' ', CmdTrim);
+    if SpacePos > 0 then
+    begin
+      FilePart := Copy(CmdTrim, 1, SpacePos - 1);
+      ParamPart := Trim(Copy(CmdTrim, SpacePos + 1, MaxInt));
+    end
+    else
+    begin
+      FilePart := CmdTrim;
+      ParamPart := '';
+    end;
+  end;
+
+  FillChar(ExecInfo, SizeOf(ExecInfo), 0);
+  ExecInfo.cbSize := SizeOf(ExecInfo);
+  ExecInfo.nShow := SW_SHOWNORMAL;
+  if ARunAsAdmin then
+    WVerb := 'runas'
+  else
+    WVerb := 'open';
+  WFile := WideString(FilePart);
+  WParams := WideString(ParamPart);
+  ExecInfo.lpVerb := PWideChar(WVerb);
+  ExecInfo.lpFile := PWideChar(WFile);
+  if ParamPart <> '' then
+    ExecInfo.lpParameters := PWideChar(WParams);
+
+  Result := ShellExecuteExW(ExecInfo);
+end;
+{$ELSE}
+begin
+  Result := False;
+end;
+{$ENDIF}
+
+function TMetricsService.RestartProcessById(const AProcessId: Cardinal): Boolean;
+{$IFDEF MSWINDOWS}
+var
+  Meta: TProcessMeta;
+  LaunchTarget: string;
+  HProc: THandle;
+  PathBuf: WideString;
+  PathLen: DWORD;
+begin
+  Result := False;
+  if (AProcessId <= 4) or (AProcessId = GetCurrentProcessId) then Exit;
+
+  LaunchTarget := '';
+  FLock.Enter;
+  try
+    if FProcMetaCache.TryGetValue(AProcessId, Meta) then
+      LaunchTarget := Meta.ImagePath;
+  finally
+    FLock.Leave;
+  end;
+
+  if (LaunchTarget = '') or (Pos(':', LaunchTarget) = 0) then
+  begin
+    HProc := OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, AProcessId);
+    if HProc <> 0 then
+    begin
+      try
+        PathLen := 512;
+        SetLength(PathBuf, PathLen);
+        if QueryFullProcessImageNameW(HProc, 0, PWideChar(PathBuf), PathLen) then
+        begin
+          SetLength(PathBuf, PathLen);
+          LaunchTarget := string(PathBuf);
+        end;
+      finally
+        CloseHandle(HProc);
+      end;
+    end;
+  end;
+
+  if (LaunchTarget = '') or (not FileExists(LaunchTarget)) then Exit;
+  if TerminateProcessById(AProcessId) then
+  begin
+    Sleep(120);
+    Result := RunNewTask('"' + LaunchTarget + '"', False);
   end;
 end;
 {$ELSE}

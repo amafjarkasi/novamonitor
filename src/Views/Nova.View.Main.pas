@@ -124,6 +124,7 @@ type
     btnEndTask: TButton;
     btnToggleTree: TButton;
     btnInspectProc: TButton;
+    btnRunTask: TButton;
     btnNavNetwork: TButton;
     btnNavServices: TButton;
 
@@ -164,6 +165,9 @@ type
     procedure UpdateServiceFilterStyles;
     procedure TerminateSelectedProcess;
     procedure ShowProcessDetailsDialog;
+    procedure ShowAffinityDialog;
+    procedure ShowRunTaskDialog;
+    procedure ShowCpuCoresDialog;
 
     procedure btnPinWindowClick(Sender: TObject);
     procedure btnFilterAllClick(Sender: TObject);
@@ -173,19 +177,25 @@ type
     procedure btnEndTaskClick(Sender: TObject);
     procedure btnToggleTreeClick(Sender: TObject);
     procedure btnInspectProcClick(Sender: TObject);
+    procedure btnRunTaskClick(Sender: TObject);
+    procedure pbCardCpuClick(Sender: TObject);
     procedure lvProcessesDblClick(Sender: TObject);
     procedure btnNavNetworkClick(Sender: TObject);
     procedure btnNavServicesClick(Sender: TObject);
     procedure mnuEndTaskClick(Sender: TObject);
     procedure mnuInspectClick(Sender: TObject);
     procedure mnuSetPriorityClick(Sender: TObject);
+    procedure mnuSetAffinityClick(Sender: TObject);
     procedure mnuSuspendProcessClick(Sender: TObject);
     procedure mnuResumeProcessClick(Sender: TObject);
+    procedure mnuRestartProcessClick(Sender: TObject);
+    procedure mnuRunNewTaskClick(Sender: TObject);
 
     procedure mnuCopyNameClick(Sender: TObject);
     procedure mnuCopyPidClick(Sender: TObject);
     procedure mnuCopyDetailsClick(Sender: TObject);
     procedure mnuCopyPathClick(Sender: TObject);
+    procedure mnuCopyCommandLineClick(Sender: TObject);
     procedure mnuCopyUserClick(Sender: TObject);
     procedure mnuOpenFileLocationClick(Sender: TObject);
 
@@ -430,6 +440,11 @@ begin
   SetupNetworkSection;
   SetupServicesSection;
 
+  pbCardCpu.Cursor := crHandPoint;
+  pbCardCpu.Hint := 'Click to inspect per-logical-core CPU utilization breakdown';
+  pbCardCpu.ShowHint := True;
+  pbCardCpu.OnClick := pbCardCpuClick;
+
   // Minimize-to-tray: the checkbox gates the behavior chosen at minimize time
   FTrayIcon := TTrayIcon.Create(Self);
   if Assigned(Application.Icon) and (not Application.Icon.Empty) then
@@ -505,6 +520,14 @@ begin
   btnInspectProc.Hint := 'Inspect selected process details, modules, and sockets (Enter)';
   btnInspectProc.ShowHint := True;
   btnInspectProc.OnClick := btnInspectProcClick;
+
+  btnRunTask := TButton.Create(Self);
+  btnRunTask.Parent := pnlTableToolbar;
+  btnRunTask.SetBounds(799, 7, 86, 26);
+  btnRunTask.Caption := 'Run Task...';
+  btnRunTask.Hint := 'Create and launch a new task or command (Ctrl+N)';
+  btnRunTask.ShowHint := True;
+  btnRunTask.OnClick := btnRunTaskClick;
 end;
 
 procedure TMainForm.SetupProcessColumns;
@@ -1009,6 +1032,11 @@ begin
   SubMenu.Add(PrioItem);
 
   Item := TMenuItem.Create(FContextMenu);
+  Item.Caption := 'Set CPU Affinity...';
+  Item.OnClick := mnuSetAffinityClick;
+  FContextMenu.Items.Add(Item);
+
+  Item := TMenuItem.Create(FContextMenu);
   Item.Caption := 'Suspend Process';
   Item.OnClick := mnuSuspendProcessClick;
   FContextMenu.Items.Add(Item);
@@ -1016,6 +1044,11 @@ begin
   Item := TMenuItem.Create(FContextMenu);
   Item.Caption := 'Resume Process';
   Item.OnClick := mnuResumeProcessClick;
+  FContextMenu.Items.Add(Item);
+
+  Item := TMenuItem.Create(FContextMenu);
+  Item.Caption := 'Restart Process';
+  Item.OnClick := mnuRestartProcessClick;
   FContextMenu.Items.Add(Item);
 
   Item := TMenuItem.Create(FContextMenu);
@@ -1035,6 +1068,11 @@ begin
   Item := TMenuItem.Create(FContextMenu);
   Item.Caption := 'Copy Image Path';
   Item.OnClick := mnuCopyPathClick;
+  FContextMenu.Items.Add(Item);
+
+  Item := TMenuItem.Create(FContextMenu);
+  Item.Caption := 'Copy Command Line';
+  Item.OnClick := mnuCopyCommandLineClick;
   FContextMenu.Items.Add(Item);
 
   Item := TMenuItem.Create(FContextMenu);
@@ -1059,6 +1097,11 @@ begin
   Item := TMenuItem.Create(FContextMenu);
   Item.Caption := 'End Task' + #9 + 'Del';
   Item.OnClick := mnuEndTaskClick;
+  FContextMenu.Items.Add(Item);
+
+  Item := TMenuItem.Create(FContextMenu);
+  Item.Caption := 'Run New Task...' + #9 + 'Ctrl+N';
+  Item.OnClick := mnuRunNewTaskClick;
   FContextMenu.Items.Add(Item);
 
   Item := TMenuItem.Create(FContextMenu);
@@ -1105,6 +1148,16 @@ begin
   ShowProcessDetailsDialog;
 end;
 
+procedure TMainForm.btnRunTaskClick(Sender: TObject);
+begin
+  ShowRunTaskDialog;
+end;
+
+procedure TMainForm.pbCardCpuClick(Sender: TObject);
+begin
+  ShowCpuCoresDialog;
+end;
+
 procedure TMainForm.lvProcessesDblClick(Sender: TObject);
 begin
   ShowProcessDetailsDialog;
@@ -1132,6 +1185,11 @@ begin
   FViewModel.SetProcessPriority(Proc.Id, Cardinal(Mnu.Tag), Mnu.Caption);
 end;
 
+procedure TMainForm.mnuSetAffinityClick(Sender: TObject);
+begin
+  ShowAffinityDialog;
+end;
+
 procedure TMainForm.mnuSuspendProcessClick(Sender: TObject);
 var
   Proc: TProcessItem;
@@ -1155,6 +1213,37 @@ begin
   Proc := GetSelectedProcess;
   if Proc = nil then Exit;
   FViewModel.SuspendResumeProcess(Proc.Id, False);
+end;
+
+procedure TMainForm.mnuRestartProcessClick(Sender: TObject);
+var
+  Proc: TProcessItem;
+begin
+  Proc := GetSelectedProcess;
+  if Proc = nil then
+  begin
+    lblFooterStatus.Caption := 'Select a process first to restart';
+    lblFooterStatus.Font.Color := FColors.Warning;
+    Exit;
+  end;
+  if (Proc.Id <= 4) or (Proc.Id = GetCurrentProcessId) then
+  begin
+    MessageDlg('Protected Process',
+      Format('Process "%s" (PID: %d) cannot be restarted.', [Proc.Name, Proc.Id]),
+      mtWarning, [mbOK], 0);
+    Exit;
+  end;
+  if MessageDlg('Restart Process Confirmation',
+    Format('Are you sure you want to terminate and relaunch "%s" (PID: %d)?', [Proc.Name, Proc.Id]),
+    mtConfirmation, [mbYes, mbNo], 0) = mrYes then
+  begin
+    FViewModel.RestartProcess(Proc.Id);
+  end;
+end;
+
+procedure TMainForm.mnuRunNewTaskClick(Sender: TObject);
+begin
+  ShowRunTaskDialog;
 end;
 
 procedure TMainForm.btnSvcStartClick(Sender: TObject);
@@ -1217,6 +1306,7 @@ var
   I, NetMatches, SvcMatches: Integer;
   NetItem: TNetworkConnectionItem;
   SvcItem: TServiceItem;
+  HandleNote, GdiNote, UserNote: string;
 begin
   Proc := GetSelectedProcess;
   if Proc = nil then
@@ -1229,10 +1319,29 @@ begin
   Report := TStringList.Create;
   Modules := FViewModel.GetProcessModules(Proc.Id);
   try
+    if Proc.HandleCount > 5000 then
+      HandleNote := '  [! High Handle Count — Potential Handle Leak]'
+    else
+      HandleNote := '';
+    if Proc.GdiObjects > 2000 then
+      GdiNote := '  [! High GDI Count — Potential GDI Leak]'
+    else
+      GdiNote := '';
+    if Proc.UserObjects > 2000 then
+      UserNote := '  [! High USER Count — Potential USER Leak]'
+    else
+      UserNote := '';
+
     Report.Add('====================================================================');
     Report.Add(Format('  PROCESS TELEMETRY & EXECUTION METADATA — %s (PID %d)', [Proc.Name, Proc.Id]));
     Report.Add('====================================================================');
     Report.Add(Format('  Process Name       : %s', [Proc.Name]));
+    if Proc.Description <> '' then
+      Report.Add(Format('  File Description   : %s', [Proc.Description]));
+    if Proc.CompanyName <> '' then
+      Report.Add(Format('  Digital Publisher  : %s', [Proc.CompanyName]));
+    if Proc.FileVersion <> '' then
+      Report.Add(Format('  File Version       : %s', [Proc.FileVersion]));
     Report.Add(Format('  Process ID (PID)   : %d', [Proc.Id]));
     Report.Add(Format('  Parent PID         : %d', [Proc.ParentId]));
     Report.Add(Format('  User Account       : %s', [Proc.UserName]));
@@ -1243,10 +1352,17 @@ begin
     Report.Add(Format('  Working Set (RAM)  : %s', [TUIUtils.FormatMegabytes(Proc.MemoryWorkingSetMB)]));
     Report.Add(Format('  Disk I/O Rate      : %s', [TUIUtils.FormatRateKBps(Proc.DiskIoKBps)]));
     Report.Add(Format('  Active Threads     : %d', [Proc.ThreadCount]));
+    Report.Add(Format('  Kernel Handles     : %d%s', [Proc.HandleCount, HandleNote]));
+    Report.Add(Format('  GDI Objects        : %d%s', [Proc.GdiObjects, GdiNote]));
+    Report.Add(Format('  USER Objects       : %d%s', [Proc.UserObjects, UserNote]));
     if Proc.ImagePath <> '' then
       Report.Add(Format('  Executable Path    : %s', [Proc.ImagePath]))
     else
       Report.Add('  Executable Path    : [Kernel / Protected System Image]');
+    if Proc.CommandLine <> '' then
+      Report.Add(Format('  Command Line       : %s', [Proc.CommandLine]))
+    else
+      Report.Add('  Command Line       : [Restricted / Empty]');
     Report.Add('');
 
     Report.Add('====================================================================');
@@ -1306,7 +1422,7 @@ begin
       Dlg.Caption := Format('Process Inspector — %s (PID %d)', [Proc.Name, Proc.Id]);
       Dlg.Position := poMainFormCenter;
       Dlg.Width := 740;
-      Dlg.Height := 540;
+      Dlg.Height := 560;
       Dlg.Color := FColors.Background;
       Dlg.Font.Name := 'Segoe UI';
       Dlg.Font.Size := 9;
@@ -1330,11 +1446,10 @@ begin
       LblSub := TLabel.Create(Dlg);
       LblSub.Parent := PnlTop;
       LblSub.SetBounds(16, 34, 680, 18);
-      LblSub.Caption := Format('CPU: %s   |   RAM: %s   |   Disk I/O: %s   |   Threads: %d   |   User: %s',
+      LblSub.Caption := Format('CPU: %s   |   RAM: %s   |   Handles: %d   |   GDI/USER: %d/%d   |   User: %s',
         [TUIUtils.FormatPercent(Proc.CpuSharePercent),
          TUIUtils.FormatMegabytes(Proc.MemoryWorkingSetMB),
-         TUIUtils.FormatRateKBps(Proc.DiskIoKBps),
-         Proc.ThreadCount, Proc.UserName]);
+         Proc.HandleCount, Proc.GdiObjects, Proc.UserObjects, Proc.UserName]);
       LblSub.Font.Size := 9;
       LblSub.Font.Color := FColors.Accent;
 
@@ -1387,6 +1502,366 @@ begin
   end;
 end;
 
+procedure TMainForm.ShowAffinityDialog;
+var
+  Proc: TProcessItem;
+  ProcMask, SysMask, NewMask, BitMask: NativeUInt;
+  Dlg: TForm;
+  PnlTop, PnlBody, PnlBottom: TPanel;
+  LblTitle, LblSub: TLabel;
+  ChkBoxes: array[0..63] of TCheckBox;
+  I, CoreCount, ColIdx, RowIdx, RowsNeeded: Integer;
+  BtnApply, BtnCancel: TButton;
+begin
+  Proc := GetSelectedProcess;
+  if Proc = nil then
+  begin
+    lblFooterStatus.Caption := 'Select a process first to configure CPU core affinity';
+    lblFooterStatus.Font.Color := FColors.Warning;
+    Exit;
+  end;
+
+  if not FViewModel.GetProcessAffinity(Proc.Id, ProcMask, SysMask) then
+  begin
+    MessageDlg('Access Denied',
+      Format('Unable to query CPU affinity mask for "%s" (PID %d).'#13#10 +
+             'Protected system processes or elevated processes require Administrator privileges.',
+             [Proc.Name, Proc.Id]),
+      mtWarning, [mbOK], 0);
+    Exit;
+  end;
+
+  CoreCount := 0;
+  for I := 0 to (SizeOf(NativeUInt) * 8) - 1 do
+  begin
+    BitMask := NativeUInt(1) shl I;
+    if (SysMask and BitMask) <> 0 then
+      CoreCount := I + 1;
+  end;
+  if CoreCount < 1 then CoreCount := 1;
+  if CoreCount > 64 then CoreCount := 64;
+  RowsNeeded := (CoreCount + 3) div 4;
+
+  Dlg := TForm.CreateNew(Self);
+  try
+    Dlg.Caption := Format('Processor Affinity — %s (PID %d)', [Proc.Name, Proc.Id]);
+    Dlg.Position := poMainFormCenter;
+    Dlg.BorderStyle := bsDialog;
+    Dlg.Width := 480;
+    Dlg.Height := 148 + (RowsNeeded * 30);
+    Dlg.Color := FColors.Background;
+    Dlg.Font.Name := 'Segoe UI';
+    Dlg.Font.Size := 9;
+
+    PnlTop := TPanel.Create(Dlg);
+    PnlTop.Parent := Dlg;
+    PnlTop.Align := alTop;
+    PnlTop.Height := 54;
+    PnlTop.BevelOuter := bvNone;
+    PnlTop.Color := FColors.Surface;
+
+    LblTitle := TLabel.Create(Dlg);
+    LblTitle.Parent := PnlTop;
+    LblTitle.SetBounds(16, 8, 440, 20);
+    LblTitle.Caption := Format('Logical Processor Affinity — %s (PID %d)', [Proc.Name, Proc.Id]);
+    LblTitle.Font.Size := 10;
+    LblTitle.Font.Style := [fsBold];
+    LblTitle.Font.Color := FColors.TextPrimary;
+
+    LblSub := TLabel.Create(Dlg);
+    LblSub.Parent := PnlTop;
+    LblSub.SetBounds(16, 30, 440, 18);
+    LblSub.Caption := Format('Select which logical CPUs "%s" is permitted to execute on (Current Mask: 0x%x)', [Proc.Name, ProcMask]);
+    LblSub.Font.Size := 8;
+    LblSub.Font.Color := FColors.TextSecondary;
+
+    PnlBottom := TPanel.Create(Dlg);
+    PnlBottom.Parent := Dlg;
+    PnlBottom.Align := alBottom;
+    PnlBottom.Height := 44;
+    PnlBottom.BevelOuter := bvNone;
+    PnlBottom.Color := FColors.Surface;
+
+    BtnApply := TButton.Create(Dlg);
+    BtnApply.Parent := PnlBottom;
+    BtnApply.SetBounds(256, 8, 104, 28);
+    BtnApply.Caption := 'Apply Affinity';
+    BtnApply.Default := True;
+    BtnApply.ModalResult := mrOk;
+
+    BtnCancel := TButton.Create(Dlg);
+    BtnCancel.Parent := PnlBottom;
+    BtnCancel.SetBounds(368, 8, 88, 28);
+    BtnCancel.Caption := 'Cancel';
+    BtnCancel.Cancel := True;
+    BtnCancel.ModalResult := mrCancel;
+
+    PnlBody := TPanel.Create(Dlg);
+    PnlBody.Parent := Dlg;
+    PnlBody.Align := alClient;
+    PnlBody.BevelOuter := bvNone;
+    PnlBody.Color := FColors.Background;
+
+    for I := 0 to 63 do
+      ChkBoxes[I] := nil;
+
+    for I := 0 to CoreCount - 1 do
+    begin
+      ColIdx := I mod 4;
+      RowIdx := I div 4;
+      BitMask := NativeUInt(1) shl I;
+      ChkBoxes[I] := TCheckBox.Create(Dlg);
+      ChkBoxes[I].Parent := PnlBody;
+      ChkBoxes[I].SetBounds(20 + (ColIdx * 110), 14 + (RowIdx * 28), 100, 22);
+      ChkBoxes[I].Caption := Format('CPU %d', [I]);
+      ChkBoxes[I].Enabled := (SysMask and BitMask) <> 0;
+      ChkBoxes[I].Checked := (ProcMask and BitMask) <> 0;
+      ChkBoxes[I].Font.Color := FColors.TextPrimary;
+    end;
+
+    if Dlg.ShowModal = mrOk then
+    begin
+      NewMask := 0;
+      for I := 0 to CoreCount - 1 do
+      begin
+        if Assigned(ChkBoxes[I]) and ChkBoxes[I].Checked then
+          NewMask := NewMask or (NativeUInt(1) shl I);
+      end;
+      if NewMask = 0 then
+      begin
+        MessageDlg('Invalid Affinity Mask',
+          'A process must be allowed to execute on at least one logical processor.',
+          mtWarning, [mbOK], 0);
+        Exit;
+      end;
+      FViewModel.SetProcessAffinity(Proc.Id, NewMask);
+    end;
+  finally
+    Dlg.Free;
+  end;
+end;
+
+procedure TMainForm.ShowRunTaskDialog;
+var
+  Dlg: TForm;
+  PnlTop, PnlBody, PnlBottom: TPanel;
+  LblTitle, LblSub, LblOpen: TLabel;
+  EdtCmd: TEdit;
+  ChkAdmin: TCheckBox;
+  BtnRun, BtnCancel: TButton;
+  CmdText: string;
+begin
+  Dlg := TForm.CreateNew(Self);
+  try
+    Dlg.Caption := 'Create New Task';
+    Dlg.Position := poMainFormCenter;
+    Dlg.BorderStyle := bsDialog;
+    Dlg.Width := 460;
+    Dlg.Height := 210;
+    Dlg.Color := FColors.Background;
+    Dlg.Font.Name := 'Segoe UI';
+    Dlg.Font.Size := 9;
+
+    PnlTop := TPanel.Create(Dlg);
+    PnlTop.Parent := Dlg;
+    PnlTop.Align := alTop;
+    PnlTop.Height := 52;
+    PnlTop.BevelOuter := bvNone;
+    PnlTop.Color := FColors.Surface;
+
+    LblTitle := TLabel.Create(Dlg);
+    LblTitle.Parent := PnlTop;
+    LblTitle.SetBounds(16, 8, 420, 20);
+    LblTitle.Caption := 'Run New Task';
+    LblTitle.Font.Size := 10;
+    LblTitle.Font.Style := [fsBold];
+    LblTitle.Font.Color := FColors.TextPrimary;
+
+    LblSub := TLabel.Create(Dlg);
+    LblSub.Parent := PnlTop;
+    LblSub.SetBounds(16, 28, 420, 18);
+    LblSub.Caption := 'Type the name of a program, folder, document, or command with arguments.';
+    LblSub.Font.Size := 8;
+    LblSub.Font.Color := FColors.TextSecondary;
+
+    PnlBottom := TPanel.Create(Dlg);
+    PnlBottom.Parent := Dlg;
+    PnlBottom.Align := alBottom;
+    PnlBottom.Height := 44;
+    PnlBottom.BevelOuter := bvNone;
+    PnlBottom.Color := FColors.Surface;
+
+    BtnRun := TButton.Create(Dlg);
+    BtnRun.Parent := PnlBottom;
+    BtnRun.SetBounds(252, 8, 90, 28);
+    BtnRun.Caption := 'Run Task';
+    BtnRun.Default := True;
+    BtnRun.ModalResult := mrOk;
+
+    BtnCancel := TButton.Create(Dlg);
+    BtnCancel.Parent := PnlBottom;
+    BtnCancel.SetBounds(350, 8, 88, 28);
+    BtnCancel.Caption := 'Cancel';
+    BtnCancel.Cancel := True;
+    BtnCancel.ModalResult := mrCancel;
+
+    PnlBody := TPanel.Create(Dlg);
+    PnlBody.Parent := Dlg;
+    PnlBody.Align := alClient;
+    PnlBody.BevelOuter := bvNone;
+    PnlBody.Color := FColors.Background;
+
+    LblOpen := TLabel.Create(Dlg);
+    LblOpen.Parent := PnlBody;
+    LblOpen.SetBounds(16, 18, 48, 20);
+    LblOpen.Caption := 'Open:';
+    LblOpen.Font.Style := [fsBold];
+    LblOpen.Font.Color := FColors.TextPrimary;
+
+    EdtCmd := TEdit.Create(Dlg);
+    EdtCmd.Parent := PnlBody;
+    EdtCmd.SetBounds(68, 15, 368, 24);
+    EdtCmd.Color := FColors.SurfaceCard;
+    EdtCmd.Font.Color := FColors.TextPrimary;
+    EdtCmd.TextHint := 'e.g. cmd.exe, powershell.exe -NoLogo, notepad.exe...';
+
+    ChkAdmin := TCheckBox.Create(Dlg);
+    ChkAdmin.Parent := PnlBody;
+    ChkAdmin.SetBounds(68, 48, 368, 22);
+    ChkAdmin.Caption := 'Create this task with administrative privileges (UAC Elevation)';
+    ChkAdmin.Font.Color := FColors.TextSecondary;
+
+    if Dlg.ShowModal = mrOk then
+    begin
+      CmdText := Trim(EdtCmd.Text);
+      if CmdText <> '' then
+        FViewModel.RunNewTask(CmdText, ChkAdmin.Checked);
+    end;
+  finally
+    Dlg.Free;
+  end;
+end;
+
+procedure TMainForm.ShowCpuCoresDialog;
+var
+  M: TSystemMetrics;
+  Dlg: TForm;
+  PnlTop, PnlBottom: TPanel;
+  LblTitle, LblSub: TLabel;
+  MemoCores: TMemo;
+  BtnCopy, BtnClose: TButton;
+  Report: TStringList;
+  I, FilledBars, EmptyBars: Integer;
+  CorePct: Single;
+  BarStr: string;
+begin
+  M := FViewModel.LatestMetrics;
+  Report := TStringList.Create;
+  try
+    Report.Add('====================================================================');
+    Report.Add(Format('  LOGICAL PROCESSOR UTILIZATION BREAKDOWN (%d Logical Cores)', [Length(M.CoreUsages)]));
+    Report.Add('====================================================================');
+    Report.Add(Format('  Aggregate Package CPU Load : %s', [TUIUtils.FormatPercent(M.CpuUsagePercent)]));
+    Report.Add(Format('  Active Processes / Threads : %d processes  |  %d threads', [M.ActiveProcessCount, M.ThreadCount]));
+    Report.Add('--------------------------------------------------------------------');
+    if Length(M.CoreUsages) > 0 then
+    begin
+      for I := 0 to High(M.CoreUsages) do
+      begin
+        CorePct := M.CoreUsages[I];
+        FilledBars := Round((CorePct / 100.0) * 28);
+        if FilledBars < 0 then FilledBars := 0;
+        if FilledBars > 28 then FilledBars := 28;
+        EmptyBars := 28 - FilledBars;
+        BarStr := StringOfChar('#', FilledBars) + StringOfChar('.', EmptyBars);
+        Report.Add(Format('  CPU Core #%2d  [%s]  %6.1f%%', [I, BarStr, CorePct]));
+      end;
+    end
+    else
+      Report.Add('  [Per-core performance telemetry initializing...]');
+    Report.Add('====================================================================');
+
+    Dlg := TForm.CreateNew(Self);
+    try
+      Dlg.Caption := 'Per-Core CPU Utilization Breakdown';
+      Dlg.Position := poMainFormCenter;
+      Dlg.Width := 600;
+      Dlg.Height := 460;
+      Dlg.Color := FColors.Background;
+      Dlg.Font.Name := 'Segoe UI';
+      Dlg.Font.Size := 9;
+
+      PnlTop := TPanel.Create(Dlg);
+      PnlTop.Parent := Dlg;
+      PnlTop.Align := alTop;
+      PnlTop.Height := 56;
+      PnlTop.BevelOuter := bvNone;
+      PnlTop.Color := FColors.Surface;
+
+      LblTitle := TLabel.Create(Dlg);
+      LblTitle.Parent := PnlTop;
+      LblTitle.SetBounds(16, 8, 550, 22);
+      LblTitle.Caption := Format('Logical Processor Telemetry (%d Cores)', [Length(M.CoreUsages)]);
+      LblTitle.Font.Size := 11;
+      LblTitle.Font.Style := [fsBold];
+      LblTitle.Font.Color := FColors.TextPrimary;
+
+      LblSub := TLabel.Create(Dlg);
+      LblSub.Parent := PnlTop;
+      LblSub.SetBounds(16, 32, 550, 18);
+      LblSub.Caption := Format('Total CPU Load: %s   |   SystemProcessorPerformanceInformation (ntdll.dll)',
+        [TUIUtils.FormatPercent(M.CpuUsagePercent)]);
+      LblSub.Font.Size := 9;
+      LblSub.Font.Color := FColors.Accent;
+
+      PnlBottom := TPanel.Create(Dlg);
+      PnlBottom.Parent := Dlg;
+      PnlBottom.Align := alBottom;
+      PnlBottom.Height := 44;
+      PnlBottom.BevelOuter := bvNone;
+      PnlBottom.Color := FColors.Surface;
+
+      BtnCopy := TButton.Create(Dlg);
+      BtnCopy.Parent := PnlBottom;
+      BtnCopy.SetBounds(16, 8, 140, 28);
+      BtnCopy.Caption := 'Copy Snapshot';
+      BtnCopy.ModalResult := mrYes;
+
+      BtnClose := TButton.Create(Dlg);
+      BtnClose.Parent := PnlBottom;
+      BtnClose.SetBounds(490, 8, 90, 28);
+      BtnClose.Anchors := [akTop, akRight];
+      BtnClose.Caption := 'Close';
+      BtnClose.Cancel := True;
+      BtnClose.Default := True;
+      BtnClose.ModalResult := mrOk;
+
+      MemoCores := TMemo.Create(Dlg);
+      MemoCores.Parent := Dlg;
+      MemoCores.Align := alClient;
+      MemoCores.BorderSpacing.Around := 12;
+      MemoCores.ReadOnly := True;
+      MemoCores.ScrollBars := ssVertical;
+      MemoCores.WordWrap := False;
+      MemoCores.Color := FColors.SurfaceCard;
+      MemoCores.Font.Name := 'Consolas';
+      MemoCores.Font.Size := 9;
+      MemoCores.Font.Color := FColors.TextPrimary;
+      MemoCores.Lines.Assign(Report);
+
+      if Dlg.ShowModal = mrYes then
+      begin
+        Clipboard.AsText := Report.Text;
+        lblFooterStatus.Caption := 'Copied per-core CPU telemetry snapshot to clipboard';
+      end;
+    finally
+      Dlg.Free;
+    end;
+  finally
+    Report.Free;
+  end;
+end;
+
 procedure TMainForm.mnuCopyNameClick(Sender: TObject);
 var
   Proc: TProcessItem;
@@ -1420,6 +1895,26 @@ begin
   begin
     Clipboard.AsText := Proc.ImagePath;
     lblFooterStatus.Caption := Format('Copied path to clipboard: %s', [Proc.ImagePath]);
+  end;
+end;
+
+procedure TMainForm.mnuCopyCommandLineClick(Sender: TObject);
+var
+  Proc: TProcessItem;
+begin
+  Proc := GetSelectedProcess;
+  if Assigned(Proc) then
+  begin
+    if Proc.CommandLine <> '' then
+    begin
+      Clipboard.AsText := Proc.CommandLine;
+      lblFooterStatus.Caption := Format('Copied command line to clipboard: %s', [Proc.CommandLine]);
+    end
+    else if Proc.ImagePath <> '' then
+    begin
+      Clipboard.AsText := Proc.ImagePath;
+      lblFooterStatus.Caption := Format('Copied executable path to clipboard: %s', [Proc.ImagePath]);
+    end;
   end;
 end;
 
@@ -1471,6 +1966,11 @@ begin
   else if (Key = VK_RETURN) and lvProcesses.Focused then
   begin
     ShowProcessDetailsDialog;
+    Key := 0;
+  end
+  else if (ssCtrl in Shift) and (Key = Word('N')) then
+  begin
+    ShowRunTaskDialog;
     Key := 0;
   end
   else if (ssCtrl in Shift) and (Key = Word('F')) then
@@ -1892,6 +2392,7 @@ procedure TMainForm.pbCardCpuPaint(Sender: TObject);
 var
   M: TSystemMetrics;
   BarColor: TColor;
+  SubCaption: string;
 begin
   M := FViewModel.LatestMetrics;
   if M.CpuUsagePercent > 80.0 then
@@ -1901,9 +2402,14 @@ begin
   else
     BarColor := FColors.Accent;
 
+  if Length(M.CoreUsages) > 0 then
+    SubCaption := Format('Across %d logical cores · Click for cores', [Length(M.CoreUsages)])
+  else
+    SubCaption := 'Across logical cores';
+
   DrawMetricCard(pbCardCpu, 'CPU UTILIZATION',
     TUIUtils.FormatPercent(M.CpuUsagePercent),
-    'Across logical cores',
+    SubCaption,
     M.CpuUsagePercent, BarColor, FViewModel.CpuHistory.ToArray);
 end;
 
