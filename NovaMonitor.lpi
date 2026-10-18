@@ -17,6 +17,7 @@
         <TextName Value="NovaMonitor.Application"/>
         <TextDesc Value="NovaMonitor Telemetry Dashboard"/>
       </XPManifest>
+      <Icon Value="0"/>
     </General>
     <BuildModes Count="1">
       <Item1 Name="Default" Default="True"/>

@@ -191,6 +191,7 @@ type
     procedure cmbIntervalChange(Sender: TObject);
     procedure lblTrayClick(Sender: TObject);
     procedure LoadHeaderLogo;
+    procedure UpdateTitleBarTheme(const ADark: Boolean);
 
     procedure AppMinimize(Sender: TObject);
     procedure TrayIconClick(Sender: TObject);
@@ -251,6 +252,7 @@ begin
   pnlContent.DoubleBuffered := True;
   pnlProcessSection.DoubleBuffered := True;
   pnlMetricsGrid.DoubleBuffered := True;
+  lvProcesses.DoubleBuffered := True;
 
   KeyPreview := True;
   OnKeyDown := FormKeyDown;
@@ -287,6 +289,7 @@ begin
   imgHeaderLogo.SetBounds(22, 16, 32, 32);
   imgHeaderLogo.Stretch := True;
   imgHeaderLogo.Proportional := True;
+  imgHeaderLogo.Transparent := True;
   LoadHeaderLogo;
   lblPageTitle.SetBounds(62, 18, 260, 28);
 
@@ -527,6 +530,7 @@ begin
   lvNetwork := TListView.Create(Self);
   lvNetwork.Parent := pnlNetworkSection;
   lvNetwork.Align := alClient;
+  lvNetwork.DoubleBuffered := True;
   lvNetwork.ViewStyle := vsReport;
   lvNetwork.GridLines := True;
   lvNetwork.RowSelect := True;
@@ -620,6 +624,7 @@ begin
   lvServices := TListView.Create(Self);
   lvServices.Parent := pnlServicesSection;
   lvServices.Align := alClient;
+  lvServices.DoubleBuffered := True;
   lvServices.ViewStyle := vsReport;
   lvServices.GridLines := True;
   lvServices.RowSelect := True;
@@ -1008,7 +1013,30 @@ begin
 end;
 
 procedure TMainForm.FormShow(Sender: TObject);
+const
+  LVM_SETEXTENDEDLISTVIEWSTYLE = $1036;
+  LVS_EX_DOUBLEBUFFER = $00010000;
+  CB_SETITEMHEIGHT = $0151;
 begin
+  {$IFDEF MSWINDOWS}
+  // Native Win32 Double-Buffering: eliminates all listview background-erase flashing
+  if lvProcesses.HandleAllocated then
+    SendMessage(lvProcesses.Handle, LVM_SETEXTENDEDLISTVIEWSTYLE, LVS_EX_DOUBLEBUFFER, LVS_EX_DOUBLEBUFFER);
+  if Assigned(lvNetwork) and lvNetwork.HandleAllocated then
+    SendMessage(lvNetwork.Handle, LVM_SETEXTENDEDLISTVIEWSTYLE, LVS_EX_DOUBLEBUFFER, LVS_EX_DOUBLEBUFFER);
+  if Assigned(lvServices) and lvServices.HandleAllocated then
+    SendMessage(lvServices.Handle, LVM_SETEXTENDEDLISTVIEWSTYLE, LVS_EX_DOUBLEBUFFER, LVS_EX_DOUBLEBUFFER);
+
+  // Force combobox closed selection height to 28px to match adjacent buttons pixel-perfectly
+  if cmbInterval.HandleAllocated then
+  begin
+    SendMessage(cmbInterval.Handle, CB_SETITEMHEIGHT, WPARAM(-1), LPARAM(20));
+    cmbInterval.SetBounds(214, 18, 110, 28);
+  end;
+
+  UpdateTitleBarTheme(FViewModel.CurrentTheme = atDark);
+  {$ENDIF}
+
   if not FInitialized then
   begin
     FInitialized := True;
@@ -1175,6 +1203,7 @@ procedure TMainForm.OnThemeChanged(const ATheme: TAppTheme);
 begin
   FColors := FViewModel.ThemeColors;
   ApplyTheme(FColors);
+  UpdateTitleBarTheme(ATheme = atDark);
   if ATheme = atDark then
     btnNavThemeToggle.Caption := 'Theme: Dark'
   else
@@ -1182,17 +1211,18 @@ begin
 end;
 
 procedure TMainForm.RefreshProcessList(const AProcesses: TProcessList);
+var
+  CountChanged: Boolean;
 begin
-  lvProcesses.Items.BeginUpdate;
-  try
-    // Virtual mode: only the row count changes; visible rows are fetched
-    // through lvProcessesData during paint
+  CountChanged := (lvProcesses.Items.Count <> AProcesses.Count);
+  if CountChanged then
+  begin
     lvProcesses.Items.Count := AProcesses.Count;
     lblProcessCount.Caption := Format('%d processes active', [AProcesses.Count]);
     StretchLastColumn;
-  finally
-    lvProcesses.Items.EndUpdate;
   end;
+  // Repaint visible rows smoothly via native double-buffering without background erase flash
+  lvProcesses.Invalidate;
 end;
 
 procedure TMainForm.lvProcessesData(Sender: TObject; Item: TListItem);
@@ -1351,12 +1381,20 @@ end;
 procedure TMainForm.pbCardDiskPaint(Sender: TObject);
 var
   M: TSystemMetrics;
+  BarColor: TColor;
 begin
   M := FViewModel.LatestMetrics;
+  if M.DiskUsagePercent >= 90.0 then
+    BarColor := FColors.Danger
+  else if M.DiskUsagePercent >= 75.0 then
+    BarColor := FColors.Warning
+  else
+    BarColor := FColors.Accent;
+
   DrawMetricCard(pbCardDisk, 'SYSTEM STORAGE',
-    Format('%.1f%% Used', [M.DiskUsagePercent]),
-    Format('%.1f GB Free of %.1f GB', [M.FreeDiskGB, M.TotalDiskGB]),
-    M.DiskUsagePercent, FColors.Success, nil);
+    Format('%.1f GB Free', [M.FreeDiskGB]),
+    Format('%.1f GB Used (%.0f%%) · %.1f GB Total', [M.UsedDiskGB, M.DiskUsagePercent, M.TotalDiskGB]),
+    M.DiskUsagePercent, BarColor, nil);
 end;
 
 procedure TMainForm.pbCardUptimePaint(Sender: TObject);
@@ -1654,7 +1692,7 @@ end;
 
 procedure TMainForm.LoadHeaderLogo;
 var
-  AppDir, LogoPath: string;
+  AppDir, LogoPath, IcoPath: string;
 begin
   AppDir := ExtractFilePath(ParamStr(0));
   LogoPath := AppDir + 'resources' + PathDelim + 'header_logo_32.png';
@@ -1669,6 +1707,55 @@ begin
     except
     end;
   end;
+
+  // Load multi-resolution application favicon (.ICO) for window title bar, taskbar, and system tray
+  IcoPath := AppDir + 'NovaMonitor.ico';
+  if not FileExists(IcoPath) then
+    IcoPath := AppDir + 'resources' + PathDelim + 'NovaMonitor.ico';
+  if not FileExists(IcoPath) then
+    IcoPath := AppDir + '..' + PathDelim + '..' + PathDelim + 'NovaMonitor.ico';
+  if FileExists(IcoPath) then
+  begin
+    try
+      Icon.LoadFromFile(IcoPath);
+      Application.Icon.LoadFromFile(IcoPath);
+      if Assigned(FTrayIcon) then
+        FTrayIcon.Icon.LoadFromFile(IcoPath);
+    except
+    end;
+  end;
 end;
+
+procedure TMainForm.UpdateTitleBarTheme(const ADark: Boolean);
+{$IFDEF MSWINDOWS}
+type
+  TDwmSetWindowAttribute = function(hwnd: HWND; dwAttribute: DWORD; pvAttribute: Pointer; cbAttribute: DWORD): HRESULT; stdcall;
+const
+  DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+  DWMWA_USE_IMMERSIVE_DARK_MODE_OLD = 19;
+var
+  DwmHandle: HMODULE;
+  DwmSetWindowAttr: TDwmSetWindowAttribute;
+  DarkModeVal: BOOL;
+begin
+  if not HandleAllocated then Exit;
+  DwmHandle := GetModuleHandle('dwmapi.dll');
+  if DwmHandle = 0 then
+    DwmHandle := LoadLibrary('dwmapi.dll');
+  if DwmHandle <> 0 then
+  begin
+    @DwmSetWindowAttr := GetProcAddress(DwmHandle, 'DwmSetWindowAttribute');
+    if Assigned(DwmSetWindowAttr) then
+    begin
+      DarkModeVal := ADark;
+      if DwmSetWindowAttr(Handle, DWMWA_USE_IMMERSIVE_DARK_MODE, @DarkModeVal, SizeOf(DarkModeVal)) <> 0 then
+        DwmSetWindowAttr(Handle, DWMWA_USE_IMMERSIVE_DARK_MODE_OLD, @DarkModeVal, SizeOf(DarkModeVal));
+    end;
+  end;
+end;
+{$ELSE}
+begin
+end;
+{$ENDIF}
 
 end.
