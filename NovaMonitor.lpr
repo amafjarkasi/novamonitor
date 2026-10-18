@@ -19,13 +19,13 @@ uses
 
 {$R *.res}
 
-procedure LogMsg(const S: string);
+procedure LogCrash(const S: string);
 var
   F: TextFile;
   LogPath: string;
 begin
   try
-    LogPath := ExtractFilePath(ParamStr(0)) + 'nova_run.log';
+    LogPath := ExtractFilePath(ParamStr(0)) + 'nova_error.log';
     AssignFile(F, LogPath);
     if FileExists(LogPath) then
       Append(F)
@@ -44,27 +44,22 @@ type
 
 class procedure TAppHelper.HandleAppException(Sender: TObject; E: Exception);
 begin
-  LogMsg('UNHANDLED EXCEPTION in Application: ' + E.ClassName + ': ' + E.Message);
+  LogCrash('UNHANDLED EXCEPTION: ' + E.ClassName + ': ' + E.Message);
+  Application.ShowException(E);
 end;
 
 begin
   try
-    LogMsg('Application starting...');
     Application.OnException := TAppHelper.HandleAppException;
     RequireDerivedFormResource := True;
     Application.Scaled := True;
     Application.Initialize;
-    LogMsg('Application.Initialize completed');
     Application.Title := 'NovaMonitor';
-    LogMsg('Creating MainForm...');
     Application.CreateForm(TMainForm, MainForm);
-    LogMsg('MainForm created. MainForm.Handle = ' + IntToStr(Int64(MainForm.Handle)));
     MainForm.Show;
-    LogMsg('MainForm.Show called. Visible = ' + BoolToStr(MainForm.Visible, True));
     Application.Run;
-    LogMsg('Application.Run exited normally');
   except
     on E: Exception do
-      LogMsg('TOP-LEVEL EXCEPTION: ' + E.ClassName + ': ' + E.Message);
+      LogCrash('TOP-LEVEL FATAL: ' + E.ClassName + ': ' + E.Message);
   end;
 end.

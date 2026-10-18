@@ -28,6 +28,11 @@
   - Custom GDI double-buffered canvas rendering (`TUIUtils.DrawCard`, `TUIUtils.DrawProgressBar`) for clean rounded metric cards and progress tracks.
   - One-click **Dark / Light Theme** toggle with immediate visual palette switching.
   - Per-Monitor v2 High-DPI awareness for crisp vector and font scaling at 100%, 125%, 150%, and 200% scaling.
+- **Desktop Ergonomics & Keyboard Accelerators**:
+  - `Ctrl+F` to instantly focus and select search filter; `Esc` to clear search.
+  - `Ctrl+T` to instantly toggle Dark/Light theme.
+  - `Ctrl+E` to trigger telemetry export.
+  - Right-click context menu on process inspector to copy Process Name, PID, or full CSV record to clipboard.
 - **System Tray Integration**:
   - Optional minimize-to-system-tray behavior (`TTrayIcon`) with single-click restore.
 - **Comprehensive Data Export**:

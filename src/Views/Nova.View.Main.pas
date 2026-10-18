@@ -19,6 +19,8 @@ uses
   StdCtrls,
   ExtCtrls,
   ComCtrls,
+  Menus,
+  Clipbrd,
   {$IFDEF FPC}
   ShellApi,
   {$ELSE}
@@ -78,6 +80,7 @@ type
     procedure FormShow(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
     procedure FormResize(Sender: TObject);
+    procedure FormKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
 
     // Navigation handlers
     procedure btnNavDashboardClick(Sender: TObject);
@@ -105,6 +108,13 @@ type
     FInitialized: Boolean;
     FTrayIcon: TTrayIcon;
     FActiveView: TAppView;
+    FContextMenu: TPopupMenu;
+
+    function GetSelectedProcess: TProcessItem;
+    procedure SetupContextMenu;
+    procedure mnuCopyNameClick(Sender: TObject);
+    procedure mnuCopyPidClick(Sender: TObject);
+    procedure mnuCopyDetailsClick(Sender: TObject);
 
     procedure OnMetricsUpdated(const AMetrics: TSystemMetrics);
     procedure OnProcessesUpdated(const AProcesses: TProcessList);
@@ -164,6 +174,15 @@ const
 procedure TMainForm.FormCreate(Sender: TObject);
 begin
   DoubleBuffered := True;
+  pnlSidebar.DoubleBuffered := True;
+  pnlHeader.DoubleBuffered := True;
+  pnlContent.DoubleBuffered := True;
+  pnlProcessSection.DoubleBuffered := True;
+  pnlMetricsGrid.DoubleBuffered := True;
+
+  KeyPreview := True;
+  OnKeyDown := FormKeyDown;
+
   Font.Name := 'Segoe UI';
   Font.Size := 9;
   FInitialized := False;
@@ -181,10 +200,10 @@ begin
   lvProcesses.OnColumnClick := lvProcessesColumnClick;
 
   // Owner-data (virtual) list: rows are served from the ViewModel on demand.
-  // Filling 450 real items via per-item messages costs 400-700ms every
-  // refresh; a virtual list costs ~0 regardless of process count.
   lvProcesses.OwnerData := True;
   lvProcesses.OnData := lvProcessesData;
+
+  SetupContextMenu;
 
   // Minimize-to-tray: the checkbox gates the behavior chosen at minimize time
   FTrayIcon := TTrayIcon.Create(Self);
@@ -197,6 +216,120 @@ begin
   FColors := FViewModel.ThemeColors;
   ApplyTheme(FColors);
   UpdateSortIndicators;
+end;
+
+procedure TMainForm.SetupContextMenu;
+var
+  Item: TMenuItem;
+begin
+  FContextMenu := TPopupMenu.Create(Self);
+
+  Item := TMenuItem.Create(FContextMenu);
+  Item.Caption := 'Copy Process Name';
+  Item.OnClick := mnuCopyNameClick;
+  FContextMenu.Items.Add(Item);
+
+  Item := TMenuItem.Create(FContextMenu);
+  Item.Caption := 'Copy Process ID (PID)';
+  Item.OnClick := mnuCopyPidClick;
+  FContextMenu.Items.Add(Item);
+
+  Item := TMenuItem.Create(FContextMenu);
+  Item.Caption := 'Copy Details (CSV)';
+  Item.OnClick := mnuCopyDetailsClick;
+  FContextMenu.Items.Add(Item);
+
+  Item := TMenuItem.Create(FContextMenu);
+  Item.Caption := '-';
+  FContextMenu.Items.Add(Item);
+
+  Item := TMenuItem.Create(FContextMenu);
+  Item.Caption := 'Pause / Resume Monitoring';
+  Item.OnClick := btnToggleMonitorClick;
+  FContextMenu.Items.Add(Item);
+
+  Item := TMenuItem.Create(FContextMenu);
+  Item.Caption := 'Export Report (JSON/CSV)...';
+  Item.OnClick := btnExportSnapshotClick;
+  FContextMenu.Items.Add(Item);
+
+  lvProcesses.PopupMenu := FContextMenu;
+end;
+
+function TMainForm.GetSelectedProcess: TProcessItem;
+begin
+  Result := nil;
+  if Assigned(lvProcesses.Selected) and
+     (lvProcesses.Selected.Index >= 0) and
+     (lvProcesses.Selected.Index < FViewModel.FilteredProcesses.Count) then
+  begin
+    Result := FViewModel.FilteredProcesses[lvProcesses.Selected.Index];
+  end;
+end;
+
+procedure TMainForm.mnuCopyNameClick(Sender: TObject);
+var
+  Proc: TProcessItem;
+begin
+  Proc := GetSelectedProcess;
+  if Assigned(Proc) then
+  begin
+    Clipboard.AsText := Proc.Name;
+    lblFooterStatus.Caption := Format('Copied to clipboard: %s', [Proc.Name]);
+  end;
+end;
+
+procedure TMainForm.mnuCopyPidClick(Sender: TObject);
+var
+  Proc: TProcessItem;
+begin
+  Proc := GetSelectedProcess;
+  if Assigned(Proc) then
+  begin
+    Clipboard.AsText := IntToStr(Proc.Id);
+    lblFooterStatus.Caption := Format('Copied PID to clipboard: %d', [Proc.Id]);
+  end;
+end;
+
+procedure TMainForm.mnuCopyDetailsClick(Sender: TObject);
+var
+  Proc: TProcessItem;
+begin
+  Proc := GetSelectedProcess;
+  if Assigned(Proc) then
+  begin
+    Clipboard.AsText := Format('%d,%s,%.2f,%s,%d',
+      [Proc.Id, Proc.Name, Proc.MemoryWorkingSetMB, TUIUtils.StatusToString(Proc.Status), Proc.ThreadCount]);
+    lblFooterStatus.Caption := Format('Copied record for: %s (PID %d)', [Proc.Name, Proc.Id]);
+  end;
+end;
+
+procedure TMainForm.FormKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
+begin
+  if (ssCtrl in Shift) and (Key = Word('F')) then
+  begin
+    edtSearch.SetFocus;
+    edtSearch.SelectAll;
+    Key := 0;
+  end
+  else if (ssCtrl in Shift) and (Key = Word('T')) then
+  begin
+    btnNavThemeToggleClick(nil);
+    Key := 0;
+  end
+  else if (ssCtrl in Shift) and (Key = Word('E')) then
+  begin
+    btnExportSnapshotClick(nil);
+    Key := 0;
+  end
+  else if (Key = VK_ESCAPE) and edtSearch.Focused then
+  begin
+    if edtSearch.Text <> '' then
+      edtSearch.Text := ''
+    else
+      lvProcesses.SetFocus;
+    Key := 0;
+  end;
 end;
 
 procedure TMainForm.AppMinimize(Sender: TObject);
@@ -260,7 +393,8 @@ begin
     Used := Used + lvProcesses.Columns[I].Width;
   W := lvProcesses.ClientWidth - Used; // ClientWidth already excludes a visible scrollbar
   if W < 80 then W := 80;
-  lvProcesses.Columns[lvProcesses.Columns.Count - 1].Width := W;
+  if lvProcesses.Columns[lvProcesses.Columns.Count - 1].Width <> W then
+    lvProcesses.Columns[lvProcesses.Columns.Count - 1].Width := W;
 end;
 
 procedure TMainForm.ApplyTheme(const AColors: TThemeColors);
