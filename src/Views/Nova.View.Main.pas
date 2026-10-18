@@ -1949,7 +1949,7 @@ begin
   DrawMetricCard(pbCardDisk, 'SYSTEM STORAGE',
     Format('%.1f GB Free', [M.FreeDiskGB]),
     Format('%.1f GB Used (%.0f%%) · %.1f GB Total', [M.UsedDiskGB, M.DiskUsagePercent, M.TotalDiskGB]),
-    M.DiskUsagePercent, BarColor, FViewModel.DiskHistory.ToArray);
+    M.DiskUsagePercent, BarColor);
 end;
 
 procedure TMainForm.pbCardUptimePaint(Sender: TObject);
