@@ -297,10 +297,49 @@ type
   end;
   PEnumServiceStatusProcessW = ^TEnumServiceStatusProcessW;
 
+  // NT Kernel SystemProcessInformation (SystemInformationClass = 5)
+  TNtSystemProcessInfo = record
+    NextEntryOffset: DWORD;
+    NumberOfThreads: DWORD;
+    WorkingSetPrivateSize: Int64;
+    HardFaultCount: DWORD;
+    NumberOfThreadsHighWatermark: DWORD;
+    CycleTime: UInt64;
+    CreateTime: Int64;
+    UserTime: Int64;
+    KernelTime: Int64;
+    ImageNameLength: Word;
+    ImageNameMaxLength: Word;
+    {$IFDEF CPU64}
+    ImageNamePad: DWORD;
+    {$ENDIF}
+    ImageNameBuffer: PWideChar;
+    BasePriority: LongInt;
+    UniqueProcessId: NativeUInt;
+    InheritedFromUniqueProcessId: NativeUInt;
+    HandleCount: DWORD;
+    SessionId: DWORD;
+    UniqueProcessKey: NativeUInt;
+    PeakVirtualSize: NativeUInt;
+    VirtualSize: NativeUInt;
+    PageFaultCount: DWORD;
+    PeakWorkingSetSize: NativeUInt;
+    WorkingSetSize: NativeUInt;
+  end;
+  PNtSystemProcessInfo = ^TNtSystemProcessInfo;
+
+  TKernelProcStat = record
+    WorkingSetMB: Single;
+    TotalTime: Int64;
+    SessionId: DWORD;
+  end;
+
 const
   // Local declarations shadow Windows-unit constants where present
   PROCESS_QUERY_LIMITED_INFORMATION = $1000;
   TH32CS_SNAPPROCESS = $2;
+  SystemProcessInformation = 5;
+  STATUS_INFO_LENGTH_MISMATCH = LongInt($C0000004);
 
   TCP_TABLE_OWNER_PID_ALL = 5;
   UDP_TABLE_OWNER_PID = 1;
@@ -327,6 +366,7 @@ function Process32First(hSnapshot: THandle; var lpEntry: TWinProcessEntry32): BO
 function Process32Next(hSnapshot: THandle; var lpEntry: TWinProcessEntry32): BOOL; stdcall; external 'kernel32.dll';
 function QueryFullProcessImageNameW(hProcess: THandle; dwFlags: DWORD; lpExeName: PWideChar; var lpdwSize: DWORD): BOOL; stdcall; external 'kernel32.dll' name 'QueryFullProcessImageNameW';
 function IsWow64Process(hProcess: THandle; var Wow64Process: BOOL): BOOL; stdcall; external 'kernel32.dll' name 'IsWow64Process';
+function NtQuerySystemInformation(SystemInformationClass: DWORD; SystemInformation: Pointer; SystemInformationLength: DWORD; var ReturnLength: DWORD): LongInt; stdcall; external 'ntdll.dll' name 'NtQuerySystemInformation';
 
 function OpenProcessToken(ProcessHandle: THandle; DesiredAccess: DWORD; var TokenHandle: THandle): BOOL; stdcall; external 'advapi32.dll' name 'OpenProcessToken';
 function GetTokenInformation(TokenHandle: THandle; TokenInformationClass: DWORD; TokenInformation: Pointer; TokenInformationLength: DWORD; var ReturnLength: DWORD): BOOL; stdcall; external 'advapi32.dll' name 'GetTokenInformation';
@@ -342,6 +382,48 @@ function GetExtendedUdpTable(pUdpTable: Pointer; pdwSize: PDWORD; bOrder: BOOL; 
 function FileTimeToLargeInt(const FT: TFileTime): Int64;
 begin
   Result := (Int64(FT.dwHighDateTime) shl 32) or FT.dwLowDateTime;
+end;
+
+procedure CollectKernelProcStats(const AMap: TDictionary<Cardinal, TKernelProcStat>);
+var
+  BufSize, RetLen: DWORD;
+  Buf: Pointer;
+  Status: LongInt;
+  Cur: PNtSystemProcessInfo;
+  Stat: TKernelProcStat;
+begin
+  AMap.Clear;
+  BufSize := 512 * 1024;
+  RetLen := 0;
+  GetMem(Buf, BufSize);
+  try
+    Status := NtQuerySystemInformation(SystemProcessInformation, Buf, BufSize, RetLen);
+    if (Status = STATUS_INFO_LENGTH_MISMATCH) and (RetLen > BufSize) then
+    begin
+      FreeMem(Buf);
+      BufSize := RetLen + 65536;
+      GetMem(Buf, BufSize);
+      Status := NtQuerySystemInformation(SystemProcessInformation, Buf, BufSize, RetLen);
+    end;
+    if Status = 0 then
+    begin
+      Cur := PNtSystemProcessInfo(Buf);
+      while Assigned(Cur) do
+      begin
+        if Cur^.UniqueProcessId > 0 then
+        begin
+          Stat.WorkingSetMB := Cur^.WorkingSetSize / (1024.0 * 1024.0);
+          Stat.TotalTime := Cur^.KernelTime + Cur^.UserTime;
+          Stat.SessionId := Cur^.SessionId;
+          AMap.AddOrSetValue(Cardinal(Cur^.UniqueProcessId), Stat);
+        end;
+        if Cur^.NextEntryOffset = 0 then Break;
+        Cur := PNtSystemProcessInfo(PByte(Cur) + Cur^.NextEntryOffset);
+      end;
+    end;
+  finally
+    FreeMem(Buf);
+  end;
 end;
 
 function GetProcessOwner(const AProcessHandle: THandle): string;
@@ -514,6 +596,9 @@ var
   PathBuf: WideString;
   PathLen: DWORD;
   IsWow64: BOOL;
+  KernelStats: TDictionary<Cardinal, TKernelProcStat>;
+  KStat: TKernelProcStat;
+  ProcName: string;
 begin
   Result := TProcessList.Create(True);
 
@@ -523,109 +608,126 @@ begin
     GetSystemTimes(@SysIdle, @SysKernel, @SysUser);
     TotalNow := FileTimeToLargeInt(SysKernel) + FileTimeToLargeInt(SysUser);
 
-    Snap := CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if Snap = INVALID_HANDLE_VALUE then
-      Exit;
-
+    KernelStats := TDictionary<Cardinal, TKernelProcStat>.Create;
     try
-      FillChar(Entry, SizeOf(Entry), 0);
-      Entry.dwSize := SizeOf(Entry);
+      CollectKernelProcStats(KernelStats);
 
-      if Process32First(Snap, Entry) then
-      repeat
-        if Entry.th32ProcessID = 0 then Continue; // System Idle Process
+      Snap := CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+      if Snap = INVALID_HANDLE_VALUE then
+        Exit;
 
-        ProcId := Entry.th32ProcessID;
-        MemMB := 0.0;
-        ProcTotal := 0;
+      try
+        FillChar(Entry, SizeOf(Entry), 0);
+        Entry.dwSize := SizeOf(Entry);
 
-        // Extended process metadata: path, owner user, architecture
-        Meta.ImagePath := '';
-        Meta.UserName := '';
-        Meta.Architecture := '64-bit';
+        if Process32First(Snap, Entry) then
+        repeat
+          if Entry.th32ProcessID = 0 then Continue; // System Idle Process
 
-        ProcHandle := OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, ProcId);
-        if ProcHandle <> 0 then
-        try
-          MemCounters.cb := SizeOf(MemCounters);
-          if GetProcessMemoryInfo(ProcHandle, @MemCounters, MemCounters.cb) then
-            MemMB := MemCounters.WorkingSetSize / (1024.0 * 1024.0);
-          // Kernel+user CPU time totals; sampled against the previous scan
-          if GetProcessTimes(ProcHandle, CreationT, ExitT, ProcKernelT, ProcUserT) then
-            ProcTotal := FileTimeToLargeInt(ProcKernelT) + FileTimeToLargeInt(ProcUserT);
+          ProcId := Entry.th32ProcessID;
+          ProcName := StrPas(Entry.szExeFile);
+          MemMB := 0.0;
+          ProcTotal := 0;
 
-          if not FProcMetaCache.TryGetValue(ProcId, Meta) then
+          if KernelStats.TryGetValue(ProcId, KStat) then
           begin
-            PathLen := 512;
-            SetLength(PathBuf, PathLen);
-            if QueryFullProcessImageNameW(ProcHandle, 0, PWideChar(PathBuf), PathLen) then
-            begin
-              SetLength(PathBuf, PathLen);
-              Meta.ImagePath := PathBuf;
-            end;
-
-            IsWow64 := False;
-            if IsWow64Process(ProcHandle, IsWow64) then
-            begin
-              if IsWow64 then Meta.Architecture := '32-bit' else Meta.Architecture := '64-bit';
-            end;
-
-            Meta.UserName := GetProcessOwner(ProcHandle);
-            FProcMetaCache.AddOrSetValue(ProcId, Meta);
+            MemMB := KStat.WorkingSetMB;
+            ProcTotal := KStat.TotalTime;
           end;
-        finally
-          CloseHandle(ProcHandle);
-        end
-        else
-        begin
-          if not FProcMetaCache.TryGetValue(ProcId, Meta) then
+
+          ProcHandle := OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, ProcId);
+          if ProcHandle <> 0 then
+          try
+            MemCounters.cb := SizeOf(MemCounters);
+            if GetProcessMemoryInfo(ProcHandle, @MemCounters, MemCounters.cb) then
+              if MemCounters.WorkingSetSize > 0 then
+                MemMB := MemCounters.WorkingSetSize / (1024.0 * 1024.0);
+            // Kernel+user CPU time totals; sampled against the previous scan
+            if GetProcessTimes(ProcHandle, CreationT, ExitT, ProcKernelT, ProcUserT) then
+              ProcTotal := FileTimeToLargeInt(ProcKernelT) + FileTimeToLargeInt(ProcUserT);
+
+            if not FProcMetaCache.TryGetValue(ProcId, Meta) then
+            begin
+              Meta.ImagePath := '';
+              Meta.UserName := '';
+              Meta.Architecture := '64-bit';
+
+              PathLen := 512;
+              SetLength(PathBuf, PathLen);
+              if QueryFullProcessImageNameW(ProcHandle, 0, PWideChar(PathBuf), PathLen) then
+              begin
+                SetLength(PathBuf, PathLen);
+                Meta.ImagePath := PathBuf;
+              end;
+
+              IsWow64 := False;
+              if IsWow64Process(ProcHandle, IsWow64) then
+              begin
+                if IsWow64 then Meta.Architecture := '32-bit' else Meta.Architecture := '64-bit';
+              end;
+
+              Meta.UserName := GetProcessOwner(ProcHandle);
+              if Meta.UserName = '' then
+                Meta.UserName := 'NT AUTHORITY\SYSTEM';
+              if Meta.ImagePath = '' then
+                Meta.ImagePath := ProcName;
+              FProcMetaCache.AddOrSetValue(ProcId, Meta);
+            end;
+          finally
+            CloseHandle(ProcHandle);
+          end
+          else
           begin
-            if ProcId = 4 then
+            if not FProcMetaCache.TryGetValue(ProcId, Meta) then
             begin
               Meta.UserName := 'NT AUTHORITY\SYSTEM';
-              Meta.ImagePath := 'ntoskrnl.exe';
               Meta.Architecture := '64-bit';
+              if ProcId = 4 then
+                Meta.ImagePath := 'ntoskrnl.exe'
+              else if Pos('.', ProcName) = 0 then
+                Meta.ImagePath := '[System Kernel]'
+              else
+                Meta.ImagePath := ProcName;
+              FProcMetaCache.AddOrSetValue(ProcId, Meta);
             end;
-            FProcMetaCache.AddOrSetValue(ProcId, Meta);
           end;
-        end;
-        FCurProcTimes.AddOrSetValue(ProcId, ProcTotal);
+          FCurProcTimes.AddOrSetValue(ProcId, ProcTotal);
 
-        CpuPct := 0.0;
-        if FHasPrevProcSample and FPrevProcTimes.TryGetValue(ProcId, PrevProc) then
-        begin
-          TotalDelta := TotalNow - FPrevProcTotalTime;
-          if (TotalDelta > 0) and (ProcTotal > PrevProc) then
+          CpuPct := 0.0;
+          if FHasPrevProcSample and FPrevProcTimes.TryGetValue(ProcId, PrevProc) then
           begin
-            CpuPct := ((ProcTotal - PrevProc) * 100.0) / TotalDelta;
-            if CpuPct < 0.0 then CpuPct := 0.0;
-            if CpuPct > 100.0 then CpuPct := 100.0;
+            TotalDelta := TotalNow - FPrevProcTotalTime;
+            if (TotalDelta > 0) and (ProcTotal > PrevProc) then
+            begin
+              CpuPct := ((ProcTotal - PrevProc) * 100.0) / TotalDelta;
+              if CpuPct < 0.0 then CpuPct := 0.0;
+              if CpuPct > 100.0 then CpuPct := 100.0;
+            end;
           end;
-        end;
 
-        // Health from CPU share and working set
-        if MemMB >= 1024.0 then
-          Status := isCritical
-        else if (MemMB >= 400.0) or (CpuPct >= 10.0) then
-          Status := isWarning
-        else if (MemMB < 1.0) and (CpuPct < 0.1) then
-          Status := isIdle
-        else
-          Status := isNormal;
+          // Health from CPU share and working set
+          if MemMB >= 1024.0 then
+            Status := isCritical
+          else if (MemMB >= 400.0) or (CpuPct >= 10.0) then
+            Status := isWarning
+          else if (MemMB < 1.0) and (CpuPct < 0.1) then
+            Status := isIdle
+          else
+            Status := isNormal;
 
-        Item := TProcessItem.Create(
-          ProcId,
-          StrPas(Entry.szExeFile),
-          MemMB,
-          CpuPct,
-          Status,
-          Entry.cntThreads,
-          '');
+          Item := TProcessItem.Create(
+            ProcId,
+            ProcName,
+            MemMB,
+            CpuPct,
+            Status,
+            Entry.cntThreads,
+            '');
 
-        Item.ParentId := Entry.th32ParentProcessID;
-        Item.ImagePath := Meta.ImagePath;
-        Item.UserName := Meta.UserName;
-        Item.Architecture := Meta.Architecture;
+          Item.ParentId := Entry.th32ParentProcessID;
+          Item.ImagePath := Meta.ImagePath;
+          Item.UserName := Meta.UserName;
+          Item.Architecture := Meta.Architecture;
 
         // Keep largest memory consumers first; sorted insertion instead of a
         // comparer callback (FPC 3.2 stable has no anonymous methods)
@@ -634,8 +736,11 @@ begin
           Dec(Idx);
         Result.Insert(Idx, Item);
       until not Process32Next(Snap, Entry);
+      finally
+        CloseHandle(Snap);
+      end;
     finally
-      CloseHandle(Snap);
+      KernelStats.Free;
     end;
 
     // This scan becomes the baseline for the next one; free the replaced

@@ -31,6 +31,7 @@ type
     FThemeColors: TThemeColors;
     FCpuHistory: THistoryBuffer;
     FRamHistory: THistoryBuffer;
+    FDiskHistory: THistoryBuffer;
     FVitalityHistory: THistoryBuffer;
     FFilterMode: TProcessFilterMode;
     FTreeViewEnabled: Boolean;
@@ -39,11 +40,15 @@ type
     FNetworkConnections: TNetworkConnectionList;
     FFilteredNetwork: TNetworkConnectionList;
     FNetworkSearchFilter: string;
+    FNetSortColumn: Integer;
+    FNetSortAscending: Boolean;
 
     FServices: TServiceList;
     FFilteredServices: TServiceList;
     FServiceSearchFilter: string;
     FServiceStatusFilter: Integer;
+    FSvcSortColumn: Integer;
+    FSvcSortAscending: Boolean;
 
     FOnMetricsUpdated: TMetricsUpdateEvent;
     FOnProcessesUpdated: TProcessListUpdateEvent;
@@ -52,7 +57,9 @@ type
     FOnStatusMessage: TStatusMessageEvent;
     FOnThemeChanged: TThemeChangedEvent;
 
-    // Column sort state: 0 = PID, 1 = Name, 2 = CPU, 3 = Memory, 4 = Status, 5 = Threads
+    // Column sort state:
+    // 0 = PID, 1 = Name, 2 = User, 3 = Arch, 4 = CPU %,
+    // 5 = Memory, 6 = Health Status, 7 = Threads, 8 = Image Path
     FSortColumn: Integer;
     FSortAscending: Boolean;
     FPollingIntervalMs: Cardinal;
@@ -64,6 +71,10 @@ type
     function CompareItems(const A, B: TProcessItem): Integer;
     procedure SortFiltered;
     procedure QuickSort(var AItems: array of TProcessItem; ALo, AHi: Integer);
+    function CompareNetworkItems(const A, B: TNetworkConnectionItem): Integer;
+    procedure SortFilteredNetwork;
+    function CompareServiceItems(const A, B: TServiceItem): Integer;
+    procedure SortFilteredServices;
     function GetIsMonitoring: Boolean;
   public
     constructor Create(const AMetricsService: IMetricsService = nil;
@@ -83,10 +94,12 @@ type
 
     procedure RefreshNetworkConnections;
     procedure SetNetworkSearchFilter(const AFilter: string);
+    procedure SetNetworkSort(const AColumn: Integer);
 
     procedure RefreshServices;
     procedure SetServiceSearchFilter(const AFilter: string);
     procedure SetServiceStatusFilter(const AFilter: Integer);
+    procedure SetServiceSort(const AColumn: Integer);
     procedure SetPollingInterval(const AIntervalMs: Cardinal);
 
     property LatestMetrics: TSystemMetrics read FLatestMetrics;
@@ -100,10 +113,15 @@ type
     property ActiveView: TAppView read FActiveView;
     property SortColumn: Integer read FSortColumn;
     property SortAscending: Boolean read FSortAscending;
+    property NetSortColumn: Integer read FNetSortColumn;
+    property NetSortAscending: Boolean read FNetSortAscending;
+    property SvcSortColumn: Integer read FSvcSortColumn;
+    property SvcSortAscending: Boolean read FSvcSortAscending;
     property FilterMode: TProcessFilterMode read FFilterMode;
     property PollingIntervalMs: Cardinal read FPollingIntervalMs;
     property CpuHistory: THistoryBuffer read FCpuHistory;
     property RamHistory: THistoryBuffer read FRamHistory;
+    property DiskHistory: THistoryBuffer read FDiskHistory;
     property VitalityHistory: THistoryBuffer read FVitalityHistory;
 
     property OnMetricsUpdated: TMetricsUpdateEvent read FOnMetricsUpdated write FOnMetricsUpdated;
@@ -147,12 +165,17 @@ begin
   FActiveView := avDashboard;
   FCpuHistory.Clear;
   FRamHistory.Clear;
+  FDiskHistory.Clear;
   FVitalityHistory.Clear;
   FCurrentTheme := atDark;
   FThemeColors := TUIUtils.GetThemeColors(FCurrentTheme);
   FLatestMetrics := TSystemMetrics.CreateEmpty;
-  FSortColumn := 3; // Memory, descending: largest consumers first on startup
+  FSortColumn := 5; // Working Set (RAM) column, descending: largest consumers first on startup
   FSortAscending := False;
+  FNetSortColumn := 0;
+  FNetSortAscending := True;
+  FSvcSortColumn := 0;
+  FSvcSortAscending := True;
   FPollingIntervalMs := 1500;
 end;
 
@@ -189,6 +212,7 @@ begin
   else
     RamPct := Single(FLatestMetrics.MemoryLoadPercent);
   FRamHistory.Add(RamPct);
+  FDiskHistory.Add(FLatestMetrics.DiskUsagePercent);
   FVitalityHistory.Add(100.0 - (FLatestMetrics.CpuUsagePercent * 0.15));
 
   FProcesses.Free;
@@ -300,13 +324,18 @@ end;
 
 procedure TMainViewModel.SetSort(const AColumn: Integer);
 begin
+  // Clicking a column header while in Tree View switches to Flat View so the sort takes effect
+  if FTreeViewEnabled then
+    FTreeViewEnabled := False;
+
   if AColumn = FSortColumn then
     FSortAscending := not FSortAscending
   else
   begin
     FSortColumn := AColumn;
-    // Numeric columns read naturally descending, text columns ascending
-    FSortAscending := not (AColumn in [2, 3, 5]);
+    // Numeric/severity columns (4 = CPU %, 5 = Memory, 6 = Health Status, 7 = Threads)
+    // read naturally descending on first click; text/ID columns ascending
+    FSortAscending := not (AColumn in [4, 5, 6, 7]);
   end;
   ApplyFilter;
   if Assigned(FOnProcessesUpdated) then
@@ -451,31 +480,51 @@ begin
   end;
 end;
 
+function StatusSeverity(const AStatus: TItemStatus): Integer;
+begin
+  case AStatus of
+    isIdle:     Result := 0;
+    isNormal:   Result := 1;
+    isWarning:  Result := 2;
+    isCritical: Result := 3;
+  else
+    Result := 0;
+  end;
+end;
+
 function TMainViewModel.CompareItems(const A, B: TProcessItem): Integer;
 begin
   Result := 0;
   case FSortColumn of
-    0: begin
+    0: begin // PID
          if A.Id > B.Id then Result := 1
          else if A.Id < B.Id then Result := -1;
        end;
-    1: Result := CompareText(A.Name, B.Name);
-    2: begin
+    1: Result := CompareText(A.Name, B.Name); // Process Name
+    2: Result := CompareText(A.UserName, B.UserName); // User Account
+    3: Result := CompareText(A.Architecture, B.Architecture); // Arch
+    4: begin // CPU %
          if A.CpuSharePercent > B.CpuSharePercent then Result := 1
          else if A.CpuSharePercent < B.CpuSharePercent then Result := -1;
        end;
-    3: begin
+    5: begin // Working Set (RAM)
          if A.MemoryWorkingSetMB > B.MemoryWorkingSetMB then Result := 1
          else if A.MemoryWorkingSetMB < B.MemoryWorkingSetMB then Result := -1;
        end;
-    4: Result := Ord(A.Status) - Ord(B.Status);
-    5: begin
+    6: Result := StatusSeverity(A.Status) - StatusSeverity(B.Status); // Health Status
+    7: begin // Active Threads
          if A.ThreadCount > B.ThreadCount then Result := 1
          else if A.ThreadCount < B.ThreadCount then Result := -1;
        end;
+    8: Result := CompareText(A.ImagePath, B.ImagePath); // Image Path
   end;
   if Result = 0 then
     Result := CompareText(A.Name, B.Name); // stable tiebreak
+  if Result = 0 then
+  begin
+    if A.Id > B.Id then Result := 1
+    else if A.Id < B.Id then Result := -1;
+  end;
 end;
 
 procedure TMainViewModel.QuickSort(var AItems: array of TProcessItem; ALo, AHi: Integer);
@@ -544,6 +593,7 @@ begin
   else
     RamPct := Single(AMetrics.MemoryLoadPercent);
   FRamHistory.Add(RamPct);
+  FDiskHistory.Add(AMetrics.DiskUsagePercent);
   FVitalityHistory.Add(100.0 - (AMetrics.CpuUsagePercent * 0.15));
 
   if Assigned(FOnMetricsUpdated) then
@@ -617,6 +667,64 @@ begin
   end;
 end;
 
+function TMainViewModel.CompareNetworkItems(const A, B: TNetworkConnectionItem): Integer;
+begin
+  Result := 0;
+  case FNetSortColumn of
+    0: begin
+         if A.ProcessId > B.ProcessId then Result := 1
+         else if A.ProcessId < B.ProcessId then Result := -1;
+       end;
+    1: Result := CompareText(A.ProcessName, B.ProcessName);
+    2: Result := CompareText(A.Protocol, B.Protocol);
+    3: begin
+         Result := CompareText(A.LocalAddress, B.LocalAddress);
+         if Result = 0 then Result := Integer(A.LocalPort) - Integer(B.LocalPort);
+       end;
+    4: begin
+         Result := CompareText(A.RemoteAddress, B.RemoteAddress);
+         if Result = 0 then Result := Integer(A.RemotePort) - Integer(B.RemotePort);
+       end;
+    5: Result := CompareText(A.State, B.State);
+  end;
+  if Result = 0 then
+    Result := Integer(A.LocalPort) - Integer(B.LocalPort);
+end;
+
+procedure TMainViewModel.SortFilteredNetwork;
+var
+  I, J: Integer;
+  Tmp: TNetworkConnectionItem;
+  Cmp: Integer;
+begin
+  if FFilteredNetwork.Count < 2 then Exit;
+  for I := 0 to FFilteredNetwork.Count - 2 do
+    for J := I + 1 to FFilteredNetwork.Count - 1 do
+    begin
+      Cmp := CompareNetworkItems(FFilteredNetwork[I], FFilteredNetwork[J]);
+      if (FNetSortAscending and (Cmp > 0)) or ((not FNetSortAscending) and (Cmp < 0)) then
+      begin
+        Tmp := FFilteredNetwork[I];
+        FFilteredNetwork[I] := FFilteredNetwork[J];
+        FFilteredNetwork[J] := Tmp;
+      end;
+    end;
+end;
+
+procedure TMainViewModel.SetNetworkSort(const AColumn: Integer);
+begin
+  if AColumn = FNetSortColumn then
+    FNetSortAscending := not FNetSortAscending
+  else
+  begin
+    FNetSortColumn := AColumn;
+    FNetSortAscending := True;
+  end;
+  SortFilteredNetwork;
+  if Assigned(FOnNetworkUpdated) then
+    FOnNetworkUpdated(FFilteredNetwork);
+end;
+
 procedure TMainViewModel.RefreshNetworkConnections;
 begin
   FNetworkConnections.Free;
@@ -646,8 +754,63 @@ begin
         FFilteredNetwork.Add(Item);
     end;
   end;
+  SortFilteredNetwork;
   if Assigned(FOnNetworkUpdated) then
     FOnNetworkUpdated(FFilteredNetwork);
+end;
+
+function TMainViewModel.CompareServiceItems(const A, B: TServiceItem): Integer;
+begin
+  Result := 0;
+  case FSvcSortColumn of
+    0: Result := CompareText(A.ServiceName, B.ServiceName);
+    1: Result := CompareText(A.DisplayName, B.DisplayName);
+    2: Result := CompareText(A.StateString, B.StateString);
+    3: begin
+         if A.ProcessId > B.ProcessId then Result := 1
+         else if A.ProcessId < B.ProcessId then Result := -1;
+       end;
+    4: begin
+         if A.ServiceType > B.ServiceType then Result := 1
+         else if A.ServiceType < B.ServiceType then Result := -1;
+       end;
+  end;
+  if Result = 0 then
+    Result := CompareText(A.ServiceName, B.ServiceName);
+end;
+
+procedure TMainViewModel.SortFilteredServices;
+var
+  I, J: Integer;
+  Tmp: TServiceItem;
+  Cmp: Integer;
+begin
+  if FFilteredServices.Count < 2 then Exit;
+  for I := 0 to FFilteredServices.Count - 2 do
+    for J := I + 1 to FFilteredServices.Count - 1 do
+    begin
+      Cmp := CompareServiceItems(FFilteredServices[I], FFilteredServices[J]);
+      if (FSvcSortAscending and (Cmp > 0)) or ((not FSvcSortAscending) and (Cmp < 0)) then
+      begin
+        Tmp := FFilteredServices[I];
+        FFilteredServices[I] := FFilteredServices[J];
+        FFilteredServices[J] := Tmp;
+      end;
+    end;
+end;
+
+procedure TMainViewModel.SetServiceSort(const AColumn: Integer);
+begin
+  if AColumn = FSvcSortColumn then
+    FSvcSortAscending := not FSvcSortAscending
+  else
+  begin
+    FSvcSortColumn := AColumn;
+    FSvcSortAscending := (AColumn <> 3);
+  end;
+  SortFilteredServices;
+  if Assigned(FOnServicesUpdated) then
+    FOnServicesUpdated(FFilteredServices);
 end;
 
 procedure TMainViewModel.RefreshServices;
@@ -695,6 +858,7 @@ begin
         FFilteredServices.Add(Item);
     end;
   end;
+  SortFilteredServices;
   if Assigned(FOnServicesUpdated) then
     FOnServicesUpdated(FFilteredServices);
 end;

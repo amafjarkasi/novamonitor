@@ -113,6 +113,7 @@ type
 
     lblTray: TLabel;
     imgHeaderLogo: TImage;
+    pnlSearchBox: TPanel;
     cmbInterval: TComboBox;
     btnPinWindow: TButton;
     btnFilterAll: TButton;
@@ -129,6 +130,7 @@ type
     pnlNetworkToolbar: TPanel;
     lblNetworkTitle: TLabel;
     lblNetworkCount: TLabel;
+    pnlNetSearchBox: TPanel;
     edtNetworkSearch: TEdit;
     btnRefreshNetwork: TButton;
     lvNetwork: TListView;
@@ -138,6 +140,7 @@ type
     pnlServicesToolbar: TPanel;
     lblServicesTitle: TLabel;
     lblServicesCount: TLabel;
+    pnlSvcSearchBox: TPanel;
     edtServiceSearch: TEdit;
     btnRefreshServices: TButton;
     btnSvcFilterAll: TButton;
@@ -193,6 +196,9 @@ type
     procedure cmbIntervalDrawItem(Control: TWinControl; Index: Integer;
       ARect: TRect; State: TOwnerDrawState);
     procedure SyncComboBoxHeight;
+    procedure SearchBoxPaint(Sender: TObject);
+    procedure SearchBoxClick(Sender: TObject);
+    procedure SearchEditFocusChange(Sender: TObject);
     procedure lblTrayClick(Sender: TObject);
     procedure LoadHeaderLogo;
     procedure UpdateTitleBarTheme(const ADark: Boolean);
@@ -208,8 +214,14 @@ type
     procedure lvProcessesData(Sender: TObject; Item: TListItem);
     {$IFDEF FPC}
     procedure lvProcessesColumnClick(Sender: TObject; Column: TListColumn);
+    procedure lvNetworkColumnClick(Sender: TObject; Column: TListColumn);
+    procedure lvServicesColumnClick(Sender: TObject; Column: TListColumn);
     {$ELSE}
     procedure lvProcessesColumnClick(Sender: TObject; Column: TListColumn;
+      var CanClick: Boolean);
+    procedure lvNetworkColumnClick(Sender: TObject; Column: TListColumn;
+      var CanClick: Boolean);
+    procedure lvServicesColumnClick(Sender: TObject; Column: TListColumn;
       var CanClick: Boolean);
     {$ENDIF}
     procedure DrawMetricCard(const APaintBox: TPaintBox; const ATitle: string;
@@ -245,6 +257,10 @@ const
   BaseColumnCaptions: array[0..8] of string =
     ('PID', 'Process Name', 'User Account', 'Arch', 'CPU %', 'Working Set (RAM)', 'Health Status',
      'Active Threads', 'Image Path');
+  BaseNetCaptions: array[0..5] of string =
+    ('PID', 'Process Name', 'Protocol', 'Local Address:Port', 'Remote Address:Port', 'State');
+  BaseSvcCaptions: array[0..4] of string =
+    ('Service Name', 'Display Name', 'Status', 'PID', 'Type');
 
 { TMainForm }
 
@@ -300,8 +316,25 @@ begin
   // Configure Header Actions (Search, Polling Interval, Pin, Pause/Resume, Export)
   pnlHeaderActions.Width := 600;
 
+  // Wrap edtSearch in a 28px custom-bordered panel so text and placeholder
+  // are vertically centered (6px top/bottom pad) with 10px left margin space
+  pnlSearchBox := TPanel.Create(Self);
+  pnlSearchBox.Parent := pnlHeaderActions;
+  pnlSearchBox.BevelOuter := bvNone;
+  pnlSearchBox.DoubleBuffered := True;
+  pnlSearchBox.SetBounds(16, 18, 190, 28);
+  pnlSearchBox.Cursor := crIBeam;
+  pnlSearchBox.OnPaint := SearchBoxPaint;
+  pnlSearchBox.OnClick := SearchBoxClick;
+
+  edtSearch.Parent := pnlSearchBox;
+  edtSearch.BorderStyle := bsNone;
   edtSearch.AutoSize := False;
-  edtSearch.SetBounds(16, 18, 190, 28);
+  edtSearch.Font.Name := 'Segoe UI';
+  edtSearch.Font.Size := 9;
+  edtSearch.SetBounds(10, 6, 172, 16);
+  edtSearch.OnEnter := SearchEditFocusChange;
+  edtSearch.OnExit := SearchEditFocusChange;
 
   cmbInterval := TComboBox.Create(Self);
   cmbInterval.Parent := pnlHeaderActions;
@@ -516,11 +549,26 @@ begin
   lblNetworkTitle.Caption := 'Active TCP/UDP Sockets';
   lblNetworkTitle.Font.Style := [fsBold];
 
+  pnlNetSearchBox := TPanel.Create(Self);
+  pnlNetSearchBox.Parent := pnlNetworkToolbar;
+  pnlNetSearchBox.BevelOuter := bvNone;
+  pnlNetSearchBox.DoubleBuffered := True;
+  pnlNetSearchBox.SetBounds(230, 7, 200, 26);
+  pnlNetSearchBox.Cursor := crIBeam;
+  pnlNetSearchBox.OnPaint := SearchBoxPaint;
+  pnlNetSearchBox.OnClick := SearchBoxClick;
+
   edtNetworkSearch := TEdit.Create(Self);
-  edtNetworkSearch.Parent := pnlNetworkToolbar;
-  edtNetworkSearch.SetBounds(230, 7, 200, 26);
+  edtNetworkSearch.Parent := pnlNetSearchBox;
+  edtNetworkSearch.BorderStyle := bsNone;
+  edtNetworkSearch.AutoSize := False;
+  edtNetworkSearch.Font.Name := 'Segoe UI';
+  edtNetworkSearch.Font.Size := 9;
+  edtNetworkSearch.SetBounds(10, 5, 182, 16);
   edtNetworkSearch.TextHint := 'Search IP, port, process...';
   edtNetworkSearch.OnChange := edtNetworkSearchChange;
+  edtNetworkSearch.OnEnter := SearchEditFocusChange;
+  edtNetworkSearch.OnExit := SearchEditFocusChange;
 
   btnRefreshNetwork := TButton.Create(Self);
   btnRefreshNetwork.Parent := pnlNetworkToolbar;
@@ -544,6 +592,10 @@ begin
   lvNetwork.OwnerData := True;
   lvNetwork.BorderStyle := bsNone;
   lvNetwork.OnData := lvNetworkData;
+  {$IFDEF FPC}
+  lvNetwork.ColumnClick := True;
+  {$ENDIF}
+  lvNetwork.OnColumnClick := lvNetworkColumnClick;
 
   Col := lvNetwork.Columns.Add;
   Col.Caption := 'PID';
@@ -610,11 +662,26 @@ begin
   btnSvcFilterStopped.Caption := 'Stopped';
   btnSvcFilterStopped.OnClick := btnSvcFilterStoppedClick;
 
+  pnlSvcSearchBox := TPanel.Create(Self);
+  pnlSvcSearchBox.Parent := pnlServicesToolbar;
+  pnlSvcSearchBox.BevelOuter := bvNone;
+  pnlSvcSearchBox.DoubleBuffered := True;
+  pnlSvcSearchBox.SetBounds(385, 7, 180, 26);
+  pnlSvcSearchBox.Cursor := crIBeam;
+  pnlSvcSearchBox.OnPaint := SearchBoxPaint;
+  pnlSvcSearchBox.OnClick := SearchBoxClick;
+
   edtServiceSearch := TEdit.Create(Self);
-  edtServiceSearch.Parent := pnlServicesToolbar;
-  edtServiceSearch.SetBounds(385, 7, 180, 26);
+  edtServiceSearch.Parent := pnlSvcSearchBox;
+  edtServiceSearch.BorderStyle := bsNone;
+  edtServiceSearch.AutoSize := False;
+  edtServiceSearch.Font.Name := 'Segoe UI';
+  edtServiceSearch.Font.Size := 9;
+  edtServiceSearch.SetBounds(10, 5, 162, 16);
   edtServiceSearch.TextHint := 'Search services...';
   edtServiceSearch.OnChange := edtServiceSearchChange;
+  edtServiceSearch.OnEnter := SearchEditFocusChange;
+  edtServiceSearch.OnExit := SearchEditFocusChange;
 
   btnRefreshServices := TButton.Create(Self);
   btnRefreshServices.Parent := pnlServicesToolbar;
@@ -638,6 +705,10 @@ begin
   lvServices.OwnerData := True;
   lvServices.BorderStyle := bsNone;
   lvServices.OnData := lvServicesData;
+  {$IFDEF FPC}
+  lvServices.ColumnClick := True;
+  {$ENDIF}
+  lvServices.OnColumnClick := lvServicesColumnClick;
 
   Col := lvServices.Columns.Add;
   Col.Caption := 'Service Name';
@@ -1120,6 +1191,11 @@ begin
   lblFooterStatus.Font.Color := AColors.TextSecondary;
   lblFooterTime.Font.Color := AColors.TextSecondary;
 
+  if Assigned(pnlSearchBox) then
+  begin
+    pnlSearchBox.Color := AColors.SurfaceCard;
+    pnlSearchBox.Invalidate;
+  end;
   edtSearch.Color := AColors.SurfaceCard;
   edtSearch.Font.Color := AColors.TextPrimary;
 
@@ -1137,6 +1213,11 @@ begin
     pnlNetworkToolbar.Color := AColors.Surface;
     lblNetworkTitle.Font.Color := AColors.TextPrimary;
     lblNetworkCount.Font.Color := AColors.TextSecondary;
+    if Assigned(pnlNetSearchBox) then
+    begin
+      pnlNetSearchBox.Color := AColors.SurfaceCard;
+      pnlNetSearchBox.Invalidate;
+    end;
     edtNetworkSearch.Color := AColors.SurfaceCard;
     edtNetworkSearch.Font.Color := AColors.TextPrimary;
     lvNetwork.Color := AColors.Surface;
@@ -1149,6 +1230,11 @@ begin
     pnlServicesToolbar.Color := AColors.Surface;
     lblServicesTitle.Font.Color := AColors.TextPrimary;
     lblServicesCount.Font.Color := AColors.TextSecondary;
+    if Assigned(pnlSvcSearchBox) then
+    begin
+      pnlSvcSearchBox.Color := AColors.SurfaceCard;
+      pnlSvcSearchBox.Invalidate;
+    end;
     edtServiceSearch.Color := AColors.SurfaceCard;
     edtServiceSearch.Font.Color := AColors.TextPrimary;
     lvServices.Color := AColors.Surface;
@@ -1256,7 +1342,7 @@ procedure TMainForm.DrawMetricCard(const APaintBox: TPaintBox; const ATitle: str
 var
   C: TCanvas;
   R, BarR, SparkR: TRect;
-  Y: Integer;
+  Y, MaxPrimaryWidth: Integer;
 const
   PadX = 14;
   LineGap = 6;
@@ -1281,6 +1367,12 @@ begin
   C.Font.Size := 15;
   C.Font.Style := [fsBold];
   C.Font.Color := FColors.TextPrimary;
+  if Length(AHistory) >= 2 then
+  begin
+    MaxPrimaryWidth := (R.Right - 92) - (R.Left + PadX);
+    while (C.Font.Size > 11) and (C.TextWidth(APrimaryVal) > MaxPrimaryWidth) do
+      C.Font.Size := C.Font.Size - 1;
+  end;
   C.TextOut(R.Left + PadX, Y, APrimaryVal);
   Inc(Y, C.TextHeight(APrimaryVal) + LineGap);
 
@@ -1292,7 +1384,7 @@ begin
   // Render rolling sparkline in the upper-right quadrant if history exists
   if Length(AHistory) >= 2 then
   begin
-    SparkR := Rect(R.Right - 85, R.Top + 12, R.Right - 14, R.Bottom - 26);
+    SparkR := Rect(R.Right - 82, R.Top + 12, R.Right - 14, R.Bottom - 26);
     TUIUtils.DrawSparkline(C, SparkR, AHistory, ABarColor,
       TUIUtils.BlendColor(FColors.SurfaceCard, ABarColor, 0.22));
   end;
@@ -1396,7 +1488,7 @@ begin
   DrawMetricCard(pbCardDisk, 'SYSTEM STORAGE',
     Format('%.1f GB Free', [M.FreeDiskGB]),
     Format('%.1f GB Used (%.0f%%) · %.1f GB Total', [M.UsedDiskGB, M.DiskUsagePercent, M.TotalDiskGB]),
-    M.DiskUsagePercent, BarColor, nil);
+    M.DiskUsagePercent, BarColor, FViewModel.DiskHistory.ToArray);
 end;
 
 procedure TMainForm.pbCardUptimePaint(Sender: TObject);
@@ -1444,6 +1536,40 @@ begin
     else
       lvProcesses.Columns[I].Caption := BaseColumnCaptions[I];
   end;
+
+  if Assigned(lvNetwork) then
+  begin
+    for I := 0 to lvNetwork.Columns.Count - 1 do
+    begin
+      if I > High(BaseNetCaptions) then Break;
+      if I = FViewModel.NetSortColumn then
+      begin
+        if FViewModel.NetSortAscending then
+          lvNetwork.Columns[I].Caption := BaseNetCaptions[I] + ' ' + AscArrow
+        else
+          lvNetwork.Columns[I].Caption := BaseNetCaptions[I] + ' ' + DescArrow;
+      end
+      else
+        lvNetwork.Columns[I].Caption := BaseNetCaptions[I];
+    end;
+  end;
+
+  if Assigned(lvServices) then
+  begin
+    for I := 0 to lvServices.Columns.Count - 1 do
+    begin
+      if I > High(BaseSvcCaptions) then Break;
+      if I = FViewModel.SvcSortColumn then
+      begin
+        if FViewModel.SvcSortAscending then
+          lvServices.Columns[I].Caption := BaseSvcCaptions[I] + ' ' + AscArrow
+        else
+          lvServices.Columns[I].Caption := BaseSvcCaptions[I] + ' ' + DescArrow;
+      end
+      else
+        lvServices.Columns[I].Caption := BaseSvcCaptions[I];
+    end;
+  end;
 end;
 
 {$IFDEF FPC}
@@ -1451,6 +1577,25 @@ procedure TMainForm.lvProcessesColumnClick(Sender: TObject; Column: TListColumn)
 begin
   // SetSort re-filters and fires OnProcessesUpdated, which refreshes the list
   FViewModel.SetSort(Column.Index);
+  if Assigned(btnToggleTree) then
+  begin
+    if FViewModel.IsTreeView then
+      btnToggleTree.Caption := 'Flat View'
+    else
+      btnToggleTree.Caption := 'Tree View';
+  end;
+  UpdateSortIndicators;
+end;
+
+procedure TMainForm.lvNetworkColumnClick(Sender: TObject; Column: TListColumn);
+begin
+  FViewModel.SetNetworkSort(Column.Index);
+  UpdateSortIndicators;
+end;
+
+procedure TMainForm.lvServicesColumnClick(Sender: TObject; Column: TListColumn);
+begin
+  FViewModel.SetServiceSort(Column.Index);
   UpdateSortIndicators;
 end;
 {$ELSE}
@@ -1458,6 +1603,27 @@ procedure TMainForm.lvProcessesColumnClick(Sender: TObject; Column: TListColumn;
   var CanClick: Boolean);
 begin
   FViewModel.SetSort(Column.Index);
+  if Assigned(btnToggleTree) then
+  begin
+    if FViewModel.IsTreeView then
+      btnToggleTree.Caption := 'Flat View'
+    else
+      btnToggleTree.Caption := 'Tree View';
+  end;
+  UpdateSortIndicators;
+end;
+
+procedure TMainForm.lvNetworkColumnClick(Sender: TObject; Column: TListColumn;
+  var CanClick: Boolean);
+begin
+  FViewModel.SetNetworkSort(Column.Index);
+  UpdateSortIndicators;
+end;
+
+procedure TMainForm.lvServicesColumnClick(Sender: TObject; Column: TListColumn;
+  var CanClick: Boolean);
+begin
+  FViewModel.SetServiceSort(Column.Index);
   UpdateSortIndicators;
 end;
 {$ENDIF}
@@ -1764,6 +1930,53 @@ end;
 begin
 end;
 {$ENDIF}
+
+procedure TMainForm.SearchBoxPaint(Sender: TObject);
+var
+  Pnl: TPanel;
+  C: TCanvas;
+  R: TRect;
+  IsActive: Boolean;
+begin
+  if not (Sender is TPanel) then Exit;
+  Pnl := TPanel(Sender);
+  C := Pnl.Canvas;
+  R := Rect(0, 0, Pnl.Width, Pnl.Height);
+
+  IsActive := ((Pnl = pnlSearchBox) and Assigned(edtSearch) and edtSearch.Focused) or
+              ((Pnl = pnlNetSearchBox) and Assigned(edtNetworkSearch) and edtNetworkSearch.Focused) or
+              ((Pnl = pnlSvcSearchBox) and Assigned(edtServiceSearch) and edtServiceSearch.Focused);
+
+  C.Brush.Style := bsSolid;
+  C.Brush.Color := FColors.SurfaceCard;
+  C.Pen.Style := psSolid;
+  C.Pen.Width := 1;
+  if IsActive then
+    C.Pen.Color := FColors.Accent
+  else
+    C.Pen.Color := FColors.Border;
+  C.Rectangle(R.Left, R.Top, R.Right, R.Bottom);
+end;
+
+procedure TMainForm.SearchBoxClick(Sender: TObject);
+begin
+  if (Sender = pnlSearchBox) and Assigned(edtSearch) then
+    edtSearch.SetFocus
+  else if (Sender = pnlNetSearchBox) and Assigned(edtNetworkSearch) then
+    edtNetworkSearch.SetFocus
+  else if (Sender = pnlSvcSearchBox) and Assigned(edtServiceSearch) then
+    edtServiceSearch.SetFocus;
+end;
+
+procedure TMainForm.SearchEditFocusChange(Sender: TObject);
+begin
+  if (Sender = edtSearch) and Assigned(pnlSearchBox) then
+    pnlSearchBox.Invalidate
+  else if (Sender = edtNetworkSearch) and Assigned(pnlNetSearchBox) then
+    pnlNetSearchBox.Invalidate
+  else if (Sender = edtServiceSearch) and Assigned(pnlSvcSearchBox) then
+    pnlSvcSearchBox.Invalidate;
+end;
 
 procedure TMainForm.lblTrayClick(Sender: TObject);
 begin

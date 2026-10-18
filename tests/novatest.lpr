@@ -224,15 +224,39 @@ begin
         Check('vm: search filter applied', VM.FilteredProcesses.Count > 0);
         VM.SetSearchFilter('');
 
-        // Sorting
-        VM.SetSort(0); // Sort by PID
-        Check('vm: sort by PID', VM.FilteredProcesses.Count > 0);
-        VM.SetSort(1); // Sort by Name
+        // Sorting across all 9 columns:
+        // 0=PID, 1=Name, 2=User, 3=Arch, 4=CPU%, 5=RAM, 6=Health, 7=Threads, 8=Path
+        Check('vm: default sort column is 5 (Working Set RAM)', VM.SortColumn = 5);
+        Check('vm: default sort order is descending by RAM',
+          (VM.FilteredProcesses.Count < 2) or
+          (VM.FilteredProcesses[0].MemoryWorkingSetMB >= VM.FilteredProcesses[VM.FilteredProcesses.Count - 1].MemoryWorkingSetMB));
+
+        VM.SetSort(0); // Sort by PID asc
+        Check('vm: sort by PID asc',
+          (VM.FilteredProcesses.Count < 2) or
+          (VM.FilteredProcesses[0].Id <= VM.FilteredProcesses[VM.FilteredProcesses.Count - 1].Id));
+        VM.SetSort(1); // Sort by Name asc
         Check('vm: sort by Name', VM.FilteredProcesses.Count > 0);
-        VM.SetSort(2); // Sort by CPU
-        Check('vm: sort by CPU', VM.FilteredProcesses.Count > 0);
-        VM.SetSort(3); // Sort by RAM
-        Check('vm: sort by RAM', VM.FilteredProcesses.Count > 0);
+        VM.SetSort(2); // Sort by User Account asc
+        Check('vm: sort by User Account', VM.FilteredProcesses.Count > 0);
+        VM.SetSort(3); // Sort by Arch asc
+        Check('vm: sort by Arch', VM.FilteredProcesses.Count > 0);
+        VM.SetSort(4); // Sort by CPU % desc
+        Check('vm: sort by CPU % desc',
+          (VM.FilteredProcesses.Count < 2) or
+          (VM.FilteredProcesses[0].CpuSharePercent >= VM.FilteredProcesses[VM.FilteredProcesses.Count - 1].CpuSharePercent));
+        VM.SetSort(5); // Sort by Working Set (RAM) desc
+        Check('vm: sort by Working Set (RAM) desc',
+          (VM.FilteredProcesses.Count < 2) or
+          (VM.FilteredProcesses[0].MemoryWorkingSetMB >= VM.FilteredProcesses[VM.FilteredProcesses.Count - 1].MemoryWorkingSetMB));
+        VM.SetSort(6); // Sort by Health Status desc
+        Check('vm: sort by Health Status', VM.FilteredProcesses.Count > 0);
+        VM.SetSort(7); // Sort by Active Threads desc
+        Check('vm: sort by Active Threads desc',
+          (VM.FilteredProcesses.Count < 2) or
+          (VM.FilteredProcesses[0].ThreadCount >= VM.FilteredProcesses[VM.FilteredProcesses.Count - 1].ThreadCount));
+        VM.SetSort(8); // Sort by Image Path asc
+        Check('vm: sort by Image Path', VM.FilteredProcesses.Count > 0);
 
         // Quick-Filter Modes
         VM.SetFilterMode(fmHeavyMemory);
