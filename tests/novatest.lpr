@@ -51,6 +51,7 @@ var
   BlendedCol: TColor;
   NetList: TNetworkConnectionList;
   SvcList: TServiceList;
+  TestBmp: TBitmap;
   HasTcp, HasLocalPort, HasRunning, HasChildLevel, HasImagePath, HasUser: Boolean;
 begin
   OutDir := ExtractFilePath(ParamStr(0));
@@ -82,6 +83,27 @@ begin
     // --- Color blend test ---
     BlendedCol := TUIUtils.BlendColor(clBlack, clWhite, 0.5);
     Check('ui: BlendColor mid-point is non-zero', BlendedCol <> clBlack);
+
+    // --- GDI+ Anti-Aliasing test ---
+    WriteLn('Testing GDI+ Anti-Aliasing Engine...');
+    TestBmp := TBitmap.Create;
+    try
+      TestBmp.SetSize(200, 100);
+      TUIUtils.DrawCard(TestBmp.Canvas, Rect(0, 0, 200, 100), clBlack, clWhite, 8);
+      Check('gdi+: DrawCard executes cleanly', True);
+      TUIUtils.DrawProgressBar(TestBmp.Canvas, Rect(10, 80, 190, 90), 50.0, clGray, clGreen);
+      Check('gdi+: DrawProgressBar executes cleanly', True);
+      TUIUtils.DrawBadge(TestBmp.Canvas, Rect(10, 10, 50, 30), 'OK', clGreen, clWhite);
+      Check('gdi+: DrawBadge executes cleanly', True);
+      Hist.Clear;
+      Hist.Add(10.0);
+      Hist.Add(30.0);
+      Hist.Add(20.0);
+      TUIUtils.DrawSparkline(TestBmp.Canvas, Rect(10, 10, 100, 60), Hist.ToArray, clLime, clGreen);
+      Check('gdi+: DrawSparkline executes cleanly with gradient fill', True);
+    finally
+      TestBmp.Free;
+    end;
 
     Svc := TMetricsService.Create;
     Exp := TExportService.Create;
@@ -120,6 +142,7 @@ begin
       Total := 0;
       for I := 1 to 3 do
       begin
+        Sleep(60);
         FreeAndNil(Procs);
         T1 := GetTickCount64;
         Procs := Svc.CollectProcesses;

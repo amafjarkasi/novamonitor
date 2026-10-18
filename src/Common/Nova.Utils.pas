@@ -7,6 +7,7 @@ unit Nova.Utils;
 interface
 
 uses
+  Windows,
   SysUtils,
   Classes,
   Types,
@@ -191,11 +192,180 @@ begin
   end;
 end;
 
+type
+  GpStatus = Integer;
+  GpGraphics = Pointer;
+  GpPen = Pointer;
+  GpBrush = Pointer;
+  GpPath = Pointer;
+  GpUnit = Integer;
+  GpWrapMode = Integer;
+  GpFillMode = Integer;
+  GpSmoothingMode = Integer;
+
+  TGdiplusStartupInput = record
+    GdiplusVersion: UInt32;
+    DebugEventCallback: Pointer;
+    SuppressBackgroundThread: BOOL;
+    SuppressExternalCodecs: BOOL;
+  end;
+  PGdiplusStartupInput = ^TGdiplusStartupInput;
+
+var
+  hGdiplus: HMODULE = 0;
+  GdiplusToken: ULONG_PTR = 0;
+  GdiplusInitialized: Boolean = False;
+
+  GdiplusStartup: function(out token: ULONG_PTR; input: PGdiplusStartupInput; output: Pointer): GpStatus; stdcall;
+  GdiplusShutdown: procedure(token: ULONG_PTR); stdcall;
+  GdipCreateFromHDC: function(hdc: HDC; out graphics: GpGraphics): GpStatus; stdcall;
+  GdipDeleteGraphics: function(graphics: GpGraphics): GpStatus; stdcall;
+  GdipSetSmoothingMode: function(graphics: GpGraphics; mode: GpSmoothingMode): GpStatus; stdcall;
+  GdipCreatePen1: function(color: DWORD; width: Single; unit_: GpUnit; out pen: GpPen): GpStatus; stdcall;
+  GdipDeletePen: function(pen: GpPen): GpStatus; stdcall;
+  GdipCreateSolidFill: function(color: DWORD; out brush: GpBrush): GpStatus; stdcall;
+  GdipCreateLineBrushI: function(point1, point2: PPoint; color1, color2: DWORD; wrapMode: GpWrapMode; out lineGradient: GpBrush): GpStatus; stdcall;
+  GdipDeleteBrush: function(brush: GpBrush): GpStatus; stdcall;
+  GdipFillPolygonI: function(graphics: GpGraphics; brush: GpBrush; points: PPoint; count: Integer; fillMode: GpFillMode): GpStatus; stdcall;
+  GdipDrawLinesI: function(graphics: GpGraphics; pen: GpPen; points: PPoint; count: Integer): GpStatus; stdcall;
+  GdipFillEllipseI: function(graphics: GpGraphics; brush: GpBrush; x, y, width, height: Integer): GpStatus; stdcall;
+  GdipDrawEllipseI: function(graphics: GpGraphics; pen: GpPen; x, y, width, height: Integer): GpStatus; stdcall;
+  GdipCreatePath: function(fillMode: GpFillMode; out path: GpPath): GpStatus; stdcall;
+  GdipDeletePath: function(path: GpPath): GpStatus; stdcall;
+  GdipAddPathArcI: function(path: GpPath; x, y, width, height: Integer; startAngle, sweepAngle: Single): GpStatus; stdcall;
+  GdipAddPathLineI: function(path: GpPath; x1, y1, x2, y2: Integer): GpStatus; stdcall;
+  GdipClosePathFigure: function(path: GpPath): GpStatus; stdcall;
+  GdipFillPath: function(graphics: GpGraphics; brush: GpBrush; path: GpPath): GpStatus; stdcall;
+  GdipDrawPath: function(graphics: GpGraphics; pen: GpPen; path: GpPath): GpStatus; stdcall;
+
+function EnsureGDIPlus: Boolean;
+var
+  Input: TGdiplusStartupInput;
+begin
+  if GdiplusInitialized then
+    Exit(True);
+
+  hGdiplus := LoadLibrary('gdiplus.dll');
+  if hGdiplus = 0 then
+    Exit(False);
+
+  @GdiplusStartup := GetProcAddress(hGdiplus, 'GdiplusStartup');
+  @GdiplusShutdown := GetProcAddress(hGdiplus, 'GdiplusShutdown');
+  @GdipCreateFromHDC := GetProcAddress(hGdiplus, 'GdipCreateFromHDC');
+  @GdipDeleteGraphics := GetProcAddress(hGdiplus, 'GdipDeleteGraphics');
+  @GdipSetSmoothingMode := GetProcAddress(hGdiplus, 'GdipSetSmoothingMode');
+  @GdipCreatePen1 := GetProcAddress(hGdiplus, 'GdipCreatePen1');
+  @GdipDeletePen := GetProcAddress(hGdiplus, 'GdipDeletePen');
+  @GdipCreateSolidFill := GetProcAddress(hGdiplus, 'GdipCreateSolidFill');
+  @GdipCreateLineBrushI := GetProcAddress(hGdiplus, 'GdipCreateLineBrushI');
+  @GdipDeleteBrush := GetProcAddress(hGdiplus, 'GdipDeleteBrush');
+  @GdipFillPolygonI := GetProcAddress(hGdiplus, 'GdipFillPolygonI');
+  @GdipDrawLinesI := GetProcAddress(hGdiplus, 'GdipDrawLinesI');
+  @GdipFillEllipseI := GetProcAddress(hGdiplus, 'GdipFillEllipseI');
+  @GdipDrawEllipseI := GetProcAddress(hGdiplus, 'GdipDrawEllipseI');
+  @GdipCreatePath := GetProcAddress(hGdiplus, 'GdipCreatePath');
+  @GdipDeletePath := GetProcAddress(hGdiplus, 'GdipDeletePath');
+  @GdipAddPathArcI := GetProcAddress(hGdiplus, 'GdipAddPathArcI');
+  @GdipAddPathLineI := GetProcAddress(hGdiplus, 'GdipAddPathLineI');
+  @GdipClosePathFigure := GetProcAddress(hGdiplus, 'GdipClosePathFigure');
+  @GdipFillPath := GetProcAddress(hGdiplus, 'GdipFillPath');
+  @GdipDrawPath := GetProcAddress(hGdiplus, 'GdipDrawPath');
+
+  if Assigned(GdiplusStartup) and Assigned(GdipCreateFromHDC) then
+  begin
+    FillChar(Input, SizeOf(Input), 0);
+    Input.GdiplusVersion := 1;
+    if GdiplusStartup(GdiplusToken, @Input, nil) = 0 then
+      GdiplusInitialized := True;
+  end;
+
+  Result := GdiplusInitialized;
+end;
+
+function ColorToARGB(const AColor: TColor; const AAlpha: Byte = 255): DWORD;
+var
+  RGB: Longint;
+begin
+  RGB := ColorToRGB(AColor);
+  Result := (DWORD(AAlpha) shl 24) or
+            (DWORD(RGB and $FF) shl 16) or
+            (DWORD(RGB and $FF00)) or
+            (DWORD((RGB shr 16) and $FF));
+end;
+
+procedure AddRoundRectToPath(APath: GpPath; const R: TRect; const ARadius: Integer);
+var
+  D: Integer;
+begin
+  D := ARadius * 2;
+  if D > (R.Right - R.Left) then D := R.Right - R.Left;
+  if D > (R.Bottom - R.Top) then D := R.Bottom - R.Top;
+  if D <= 0 then
+  begin
+    GdipAddPathLineI(APath, R.Left, R.Top, R.Right, R.Top);
+    GdipAddPathLineI(APath, R.Right, R.Top, R.Right, R.Bottom);
+    GdipAddPathLineI(APath, R.Right, R.Bottom, R.Left, R.Bottom);
+    GdipAddPathLineI(APath, R.Left, R.Bottom, R.Left, R.Top);
+    GdipClosePathFigure(APath);
+    Exit;
+  end;
+
+  GdipAddPathArcI(APath, R.Left, R.Top, D, D, 180, 90);
+  GdipAddPathArcI(APath, R.Right - D, R.Top, D, D, 270, 90);
+  GdipAddPathArcI(APath, R.Right - D, R.Bottom - D, D, D, 0, 90);
+  GdipAddPathArcI(APath, R.Left, R.Bottom - D, D, D, 90, 90);
+  GdipClosePathFigure(APath);
+end;
+
 class procedure TUIUtils.DrawCard(const ACanvas: TCanvas; const ARect: TRect;
   const ABgColor, ABorderColor: TColor; const ARadius: Integer);
+var
+  G: GpGraphics;
+  Path: GpPath;
+  Brush: GpBrush;
+  Pen: GpPen;
+  W, H: Integer;
+  R: TRect;
 begin
-  // Never assume canvas state from the previous draw call: text drawing leaves
-  // Brush.Style = bsClear and badges/bars leave Pen.Style = psClear behind.
+  W := ARect.Right - ARect.Left;
+  H := ARect.Bottom - ARect.Top;
+  if (W <= 0) or (H <= 0) then Exit;
+
+  if EnsureGDIPlus and (GdipCreateFromHDC(ACanvas.Handle, G) = 0) then
+  begin
+    try
+      GdipSetSmoothingMode(G, 2); // SmoothingModeAntiAlias
+
+      R := Rect(ARect.Left, ARect.Top, ARect.Right - 1, ARect.Bottom - 1);
+      if GdipCreatePath(0, Path) = 0 then
+      begin
+        try
+          AddRoundRectToPath(Path, R, ARadius);
+
+          // Fill Card Surface
+          if GdipCreateSolidFill(ColorToARGB(ABgColor, 255), Brush) = 0 then
+          begin
+            GdipFillPath(G, Brush, Path);
+            GdipDeleteBrush(Brush);
+          end;
+
+          // Stroke Card Border with smooth anti-aliasing
+          if GdipCreatePen1(ColorToARGB(ABorderColor, 255), 1.0, 2, Pen) = 0 then
+          begin
+            GdipDrawPath(G, Pen, Path);
+            GdipDeletePen(Pen);
+          end;
+        finally
+          GdipDeletePath(Path);
+        end;
+      end;
+    finally
+      GdipDeleteGraphics(G);
+    end;
+    Exit;
+  end;
+
+  // Fallback to standard GDI
   ACanvas.Brush.Style := bsSolid;
   ACanvas.Brush.Color := ABgColor;
   ACanvas.Pen.Style   := psSolid;
@@ -208,11 +378,40 @@ class procedure TUIUtils.DrawBadge(const ACanvas: TCanvas; const ARect: TRect;
   const AText: string; const ABadgeColor, ATextColor: TColor);
 var
   TextX, TextY: Integer;
+  G: GpGraphics;
+  Path: GpPath;
+  Brush: GpBrush;
+  R: TRect;
 begin
-  ACanvas.Brush.Style := bsSolid;
-  ACanvas.Brush.Color := ABadgeColor;
-  ACanvas.Pen.Style   := psClear;
-  ACanvas.RoundRect(ARect.Left, ARect.Top, ARect.Right, ARect.Bottom, 6, 6);
+  if EnsureGDIPlus and (GdipCreateFromHDC(ACanvas.Handle, G) = 0) then
+  begin
+    try
+      GdipSetSmoothingMode(G, 2); // SmoothingModeAntiAlias
+      R := Rect(ARect.Left, ARect.Top, ARect.Right - 1, ARect.Bottom - 1);
+      if GdipCreatePath(0, Path) = 0 then
+      begin
+        try
+          AddRoundRectToPath(Path, R, 5);
+          if GdipCreateSolidFill(ColorToARGB(ABadgeColor, 255), Brush) = 0 then
+          begin
+            GdipFillPath(G, Brush, Path);
+            GdipDeleteBrush(Brush);
+          end;
+        finally
+          GdipDeletePath(Path);
+        end;
+      end;
+    finally
+      GdipDeleteGraphics(G);
+    end;
+  end
+  else
+  begin
+    ACanvas.Brush.Style := bsSolid;
+    ACanvas.Brush.Color := ABadgeColor;
+    ACanvas.Pen.Style   := psClear;
+    ACanvas.RoundRect(ARect.Left, ARect.Top, ARect.Right, ARect.Bottom, 6, 6);
+  end;
 
   ACanvas.Font.Color := ATextColor;
   ACanvas.Font.Size  := 8;
@@ -228,21 +427,69 @@ class procedure TUIUtils.DrawProgressBar(const ACanvas: TCanvas; const ARect: TR
   const APercent: Single; const ABgColor, ABarColor: TColor);
 var
   FillWidth: Integer;
-  BarR: TRect;
   ClampedPct: Single;
+  G: GpGraphics;
+  Path: GpPath;
+  Brush: GpBrush;
+  TrackR, BarR: TRect;
 begin
   ClampedPct := APercent;
-  if ClampedPct < 0 then ClampedPct := 0;
-  if ClampedPct > 100 then ClampedPct := 100;
+  if ClampedPct < 0.0 then ClampedPct := 0.0;
+  if ClampedPct > 100.0 then ClampedPct := 100.0;
 
-  // Background track
+  FillWidth := Round((ARect.Right - ARect.Left) * (ClampedPct / 100.0));
+
+  if EnsureGDIPlus and (GdipCreateFromHDC(ACanvas.Handle, G) = 0) then
+  begin
+    try
+      GdipSetSmoothingMode(G, 2); // SmoothingModeAntiAlias
+
+      // Background Track
+      TrackR := Rect(ARect.Left, ARect.Top, ARect.Right - 1, ARect.Bottom - 1);
+      if GdipCreatePath(0, Path) = 0 then
+      begin
+        try
+          AddRoundRectToPath(Path, TrackR, 4);
+          if GdipCreateSolidFill(ColorToARGB(ABgColor, 255), Brush) = 0 then
+          begin
+            GdipFillPath(G, Brush, Path);
+            GdipDeleteBrush(Brush);
+          end;
+        finally
+          GdipDeletePath(Path);
+        end;
+      end;
+
+      // Active Bar Fill (Anti-Aliased Capsule)
+      if FillWidth >= 3 then
+      begin
+        BarR := Rect(ARect.Left, ARect.Top, ARect.Left + FillWidth - 1, ARect.Bottom - 1);
+        if GdipCreatePath(0, Path) = 0 then
+        begin
+          try
+            AddRoundRectToPath(Path, BarR, 4);
+            if GdipCreateSolidFill(ColorToARGB(ABarColor, 255), Brush) = 0 then
+            begin
+              GdipFillPath(G, Brush, Path);
+              GdipDeleteBrush(Brush);
+            end;
+          finally
+            GdipDeletePath(Path);
+          end;
+        end;
+      end;
+    finally
+      GdipDeleteGraphics(G);
+    end;
+    Exit;
+  end;
+
+  // Fallback to standard GDI
   ACanvas.Brush.Style := bsSolid;
   ACanvas.Brush.Color := ABgColor;
   ACanvas.Pen.Style := psClear;
   ACanvas.RoundRect(ARect.Left, ARect.Top, ARect.Right, ARect.Bottom, 4, 4);
 
-  // Active progress fill
-  FillWidth := Round((ARect.Right - ARect.Left) * (ClampedPct / 100.0));
   if FillWidth > 2 then
   begin
     BarR := Rect(ARect.Left, ARect.Top, ARect.Left + FillWidth, ARect.Bottom);
@@ -291,6 +538,12 @@ var
   PolyPts: array of TPoint;
   X, Y: Integer;
   Normalized: Single;
+  G: GpGraphics;
+  Pen: GpPen;
+  GradBrush: GpBrush;
+  DotBrush: GpBrush;
+  P1, P2: TPoint;
+  LastX, LastY: Integer;
 begin
   N := Length(AValues);
   if N < 2 then Exit;
@@ -320,13 +573,65 @@ begin
     Pts[I] := Point(X, Y);
   end;
 
-  // Draw filled area under sparkline curve
+  // Polygon points for area fill underneath the curve
   SetLength(PolyPts, N + 2);
   for I := 0 to N - 1 do
     PolyPts[I] := Pts[I];
   PolyPts[N] := Point(Pts[N - 1].X, ARect.Bottom);
   PolyPts[N + 1] := Point(Pts[0].X, ARect.Bottom);
 
+  if EnsureGDIPlus and (GdipCreateFromHDC(ACanvas.Handle, G) = 0) then
+  begin
+    try
+      GdipSetSmoothingMode(G, 2); // SmoothingModeAntiAlias
+
+      // 1. Smooth Linear Gradient Area Fill (fading from 45% alpha at top to 0% at bottom)
+      P1 := Point(0, ARect.Top);
+      P2 := Point(0, ARect.Bottom);
+      if GdipCreateLineBrushI(@P1, @P2, ColorToARGB(ALineColor, 115), ColorToARGB(ALineColor, 0), 0, GradBrush) = 0 then
+      begin
+        GdipFillPolygonI(G, GradBrush, @PolyPts[0], Length(PolyPts), 0);
+        GdipDeleteBrush(GradBrush);
+      end;
+
+      // 2. Anti-Aliased Sparkline Curve Stroke (Crisp 2.0px stroke)
+      if GdipCreatePen1(ColorToARGB(ALineColor, 255), 2.0, 2, Pen) = 0 then
+      begin
+        GdipDrawLinesI(G, Pen, @Pts[0], N);
+        GdipDeletePen(Pen);
+      end;
+
+      // 3. Glowing Indicator Dot on newest sample
+      LastX := Pts[N - 1].X;
+      LastY := Pts[N - 1].Y;
+
+      // Outer glow halo (radius 5)
+      if GdipCreateSolidFill(ColorToARGB(ALineColor, 75), DotBrush) = 0 then
+      begin
+        GdipFillEllipseI(G, DotBrush, LastX - 5, LastY - 5, 10, 10);
+        GdipDeleteBrush(DotBrush);
+      end;
+
+      // Inner solid dot (radius 3)
+      if GdipCreateSolidFill(ColorToARGB(ALineColor, 255), DotBrush) = 0 then
+      begin
+        GdipFillEllipseI(G, DotBrush, LastX - 3, LastY - 3, 6, 6);
+        GdipDeleteBrush(DotBrush);
+      end;
+
+      // Center white pinpoint (radius 1.5)
+      if GdipCreateSolidFill(ColorToARGB(clWhite, 255), DotBrush) = 0 then
+      begin
+        GdipFillEllipseI(G, DotBrush, LastX - 1, LastY - 1, 3, 3);
+        GdipDeleteBrush(DotBrush);
+      end;
+    finally
+      GdipDeleteGraphics(G);
+    end;
+    Exit;
+  end;
+
+  // Fallback to standard GDI
   ACanvas.Brush.Style := bsSolid;
   ACanvas.Brush.Color := AFillColor;
   ACanvas.Pen.Style := psClear;
@@ -351,5 +656,19 @@ begin
   ACanvas.Pen.Style := psSolid;
   ACanvas.Brush.Style := bsClear;
 end;
+
+initialization
+
+finalization
+  if GdiplusInitialized and Assigned(GdiplusShutdown) then
+  begin
+    GdiplusShutdown(GdiplusToken);
+    GdiplusInitialized := False;
+  end;
+  if hGdiplus <> 0 then
+  begin
+    FreeLibrary(hGdiplus);
+    hGdiplus := 0;
+  end;
 
 end.
