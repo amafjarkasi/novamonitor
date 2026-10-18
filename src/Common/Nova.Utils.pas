@@ -41,6 +41,7 @@ type
   /// </summary>
   TUIUtils = class
   public
+    class procedure LogCrash(const S: string); static;
     class function GetThemeColors(const ATheme: TAppTheme): TThemeColors; static;
     class function FormatBytes(const ABytes: UInt64): string; static;
     class function FormatMegabytes(const AMB: Single): string; static;
@@ -670,6 +671,24 @@ begin
   ACanvas.Pen.Width := 1;
   ACanvas.Pen.Style := psSolid;
   ACanvas.Brush.Style := bsClear;
+end;
+
+class procedure TUIUtils.LogCrash(const S: string);
+var
+  F: TextFile;
+  LogPath: string;
+begin
+  try
+    LogPath := ExtractFilePath(ParamStr(0)) + 'nova_error.log';
+    AssignFile(F, LogPath);
+    if FileExists(LogPath) then
+      Append(F)
+    else
+      Rewrite(F);
+    WriteLn(F, FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now) + ' - ' + S);
+    CloseFile(F);
+  except
+  end;
 end;
 
 initialization

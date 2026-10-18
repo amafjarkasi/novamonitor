@@ -28,6 +28,7 @@ type
     FOnProcessUpdate: TProcessListUpdateEvent;
     FStopEvent: TEvent;
     FLastProcessCount: Integer;
+    FLastThreadCount: Integer;
     FCurMetrics: TSystemMetrics;
     FCurProcesses: TProcessList;
 
@@ -106,6 +107,7 @@ begin
   FOnProcessUpdate := AOnProcessUpdate;
   FStopEvent := TEvent.Create(nil, True, False, '');
   FLastProcessCount := 0;
+  FLastThreadCount := 0;
   Start; // Safely start execution
 end;
 
@@ -137,7 +139,7 @@ end;
 
 procedure TMetricsWorkerThread.Execute;
 var
-  Counter: Integer;
+  Counter, I, TotalThreads: Integer;
 begin
   Counter := 0;
   while not Terminated do
@@ -147,12 +149,18 @@ begin
       // The snapshot zeroes the count on every tick; keep the last real value
       // so the UI does not flicker to "0 active processes" between process scans
       FCurMetrics.ActiveProcessCount := FLastProcessCount;
+      FCurMetrics.ThreadCount := FLastThreadCount;
 
       if (Counter mod 3 = 0) and Assigned(FOnProcessUpdate) then
       begin
         FCurProcesses := FService.CollectProcesses;
         FLastProcessCount := FCurProcesses.Count;
+        TotalThreads := 0;
+        for I := 0 to FCurProcesses.Count - 1 do
+          Inc(TotalThreads, FCurProcesses[I].ThreadCount);
+        FLastThreadCount := TotalThreads;
         FCurMetrics.ActiveProcessCount := FLastProcessCount;
+        FCurMetrics.ThreadCount := FLastThreadCount;
         Synchronize(DoSyncProcesses);
       end;
 

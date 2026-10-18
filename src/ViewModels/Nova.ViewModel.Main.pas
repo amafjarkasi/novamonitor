@@ -180,6 +180,7 @@ end;
 procedure TMainViewModel.Initialize;
 var
   RamPct: Single;
+  I, TotalThreads: Integer;
 begin
   FLatestMetrics := FMetricsService.CollectSnapshot;
   FCpuHistory.Add(FLatestMetrics.CpuUsagePercent);
@@ -192,6 +193,11 @@ begin
 
   FProcesses.Free;
   FProcesses := FMetricsService.CollectProcesses;
+  FLatestMetrics.ActiveProcessCount := FProcesses.Count;
+  TotalThreads := 0;
+  for I := 0 to FProcesses.Count - 1 do
+    Inc(TotalThreads, FProcesses[I].ThreadCount);
+  FLatestMetrics.ThreadCount := TotalThreads;
   ApplyFilter;
 
   RefreshNetworkConnections;

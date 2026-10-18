@@ -22,6 +22,7 @@ uses
   Menus,
   Clipbrd,
   {$IFDEF FPC}
+  LCLType,
   ShellApi,
   {$ELSE}
   Winapi.ShellApi,
@@ -189,6 +190,9 @@ type
     procedure btnSvcFilterRunningClick(Sender: TObject);
     procedure btnSvcFilterStoppedClick(Sender: TObject);
     procedure cmbIntervalChange(Sender: TObject);
+    procedure cmbIntervalDrawItem(Control: TWinControl; Index: Integer;
+      ARect: TRect; State: TOwnerDrawState);
+    procedure SyncComboBoxHeight;
     procedure lblTrayClick(Sender: TObject);
     procedure LoadHeaderLogo;
     procedure UpdateTitleBarTheme(const ADark: Boolean);
@@ -301,9 +305,10 @@ begin
 
   cmbInterval := TComboBox.Create(Self);
   cmbInterval.Parent := pnlHeaderActions;
-  cmbInterval.Style := csDropDownList;
+  cmbInterval.Style := csOwnerDrawFixed;
   cmbInterval.AutoSize := False;
-  cmbInterval.ItemHeight := 20;
+  cmbInterval.ItemHeight := 22;
+  cmbInterval.Font.Name := 'Segoe UI';
   cmbInterval.Font.Size := 9;
   cmbInterval.SetBounds(214, 18, 110, 28);
   cmbInterval.Items.Add('0.5s (Fast)');
@@ -313,6 +318,7 @@ begin
   cmbInterval.Items.Add('5.0s (Eco)');
   cmbInterval.ItemIndex := 2;
   cmbInterval.OnChange := cmbIntervalChange;
+  cmbInterval.OnDrawItem := cmbIntervalDrawItem;
   cmbInterval.Hint := 'Telemetry Polling Interval';
   cmbInterval.ShowHint := True;
 
@@ -1016,7 +1022,6 @@ procedure TMainForm.FormShow(Sender: TObject);
 const
   LVM_SETEXTENDEDLISTVIEWSTYLE = $1036;
   LVS_EX_DOUBLEBUFFER = $00010000;
-  CB_SETITEMHEIGHT = $0151;
 begin
   {$IFDEF MSWINDOWS}
   // Native Win32 Double-Buffering: eliminates all listview background-erase flashing
@@ -1027,14 +1032,8 @@ begin
   if Assigned(lvServices) and lvServices.HandleAllocated then
     SendMessage(lvServices.Handle, LVM_SETEXTENDEDLISTVIEWSTYLE, LVS_EX_DOUBLEBUFFER, LVS_EX_DOUBLEBUFFER);
 
-  // Force combobox closed selection height to 28px to match adjacent buttons pixel-perfectly
-  if cmbInterval.HandleAllocated then
-  begin
-    SendMessage(cmbInterval.Handle, CB_SETITEMHEIGHT, WPARAM(-1), LPARAM(20));
-    cmbInterval.SetBounds(214, 18, 110, 28);
-  end;
-
   UpdateTitleBarTheme(FViewModel.CurrentTheme = atDark);
+  SyncComboBoxHeight;
   {$ENDIF}
 
   if not FInitialized then
@@ -1067,6 +1066,7 @@ begin
   pbCardDisk.SetBounds(Spacing * 3 + CardWidth * 2, 8, CardWidth, CardHeight);
   pbCardUptime.SetBounds(Spacing * 4 + CardWidth * 3, 8, CardWidth, CardHeight);
 
+  SyncComboBoxHeight;
   StretchLastColumn;
 end;
 
@@ -1127,6 +1127,8 @@ begin
   begin
     cmbInterval.Color := AColors.SurfaceCard;
     cmbInterval.Font.Color := AColors.TextPrimary;
+    SyncComboBoxHeight;
+    cmbInterval.Invalidate;
   end;
 
   if Assigned(pnlNetworkSection) then
@@ -1685,6 +1687,84 @@ begin
   FViewModel.SetPollingInterval(IntervalMs);
 end;
 
+procedure TMainForm.cmbIntervalDrawItem(Control: TWinControl; Index: Integer;
+  ARect: TRect; State: TOwnerDrawState);
+var
+  C: TCanvas;
+  Txt: string;
+  TextY: Integer;
+begin
+  if not Assigned(cmbInterval) then Exit;
+  C := cmbInterval.Canvas;
+  if (odSelected in State) and not (odComboBoxEdit in State) then
+  begin
+    C.Brush.Color := TUIUtils.BlendColor(FColors.SurfaceCard, FColors.Accent, 0.28);
+    C.Font.Color := FColors.TextPrimary;
+  end
+  else
+  begin
+    C.Brush.Color := FColors.SurfaceCard;
+    C.Font.Color := FColors.TextPrimary;
+  end;
+  C.FillRect(ARect);
+
+  if (Index >= 0) and (Index < cmbInterval.Items.Count) then
+  begin
+    Txt := cmbInterval.Items[Index];
+    C.Font.Name := 'Segoe UI';
+    C.Font.Size := 9;
+    C.Brush.Style := bsClear;
+    TextY := ARect.Top + ((ARect.Bottom - ARect.Top) - C.TextHeight(Txt)) div 2;
+    C.TextOut(ARect.Left + 6, TextY, Txt);
+  end;
+end;
+
+procedure TMainForm.SyncComboBoxHeight;
+{$IFDEF MSWINDOWS}
+const
+  CB_SETITEMHEIGHT = $0151;
+var
+  CmbRect, BtnRect: Windows.TRect;
+  TargetH, ActualH, InnerH: Integer;
+begin
+  if not Assigned(cmbInterval) or not cmbInterval.HandleAllocated then Exit;
+
+  TargetH := 28;
+  if Assigned(btnPinWindow) and btnPinWindow.HandleAllocated then
+  begin
+    if Windows.GetWindowRect(btnPinWindow.Handle, BtnRect) then
+      if (BtnRect.Bottom - BtnRect.Top) > 20 then
+        TargetH := BtnRect.Bottom - BtnRect.Top;
+  end;
+
+  InnerH := TargetH - 6;
+  cmbInterval.ItemHeight := InnerH;
+  Windows.SendMessage(cmbInterval.Handle, CB_SETITEMHEIGHT, WPARAM(-1), LPARAM(InnerH));
+  Windows.SendMessage(cmbInterval.Handle, CB_SETITEMHEIGHT, WPARAM(0), LPARAM(InnerH));
+
+  if Windows.GetWindowRect(cmbInterval.Handle, CmbRect) then
+  begin
+    ActualH := CmbRect.Bottom - CmbRect.Top;
+    if (ActualH > 0) and (ActualH <> TargetH) then
+    begin
+      InnerH := InnerH + (TargetH - ActualH);
+      if InnerH >= 14 then
+      begin
+        cmbInterval.ItemHeight := InnerH;
+        Windows.SendMessage(cmbInterval.Handle, CB_SETITEMHEIGHT, WPARAM(-1), LPARAM(InnerH));
+        Windows.SendMessage(cmbInterval.Handle, CB_SETITEMHEIGHT, WPARAM(0), LPARAM(InnerH));
+      end;
+    end;
+  end;
+
+  Windows.SetWindowPos(cmbInterval.Handle, 0, 214, 18, 110, TargetH,
+    SWP_NOZORDER or SWP_NOACTIVATE);
+end;
+{$ELSE}
+begin
+end;
+{$ENDIF}
+
 procedure TMainForm.lblTrayClick(Sender: TObject);
 begin
   chkTray.Checked := not chkTray.Checked;
@@ -1692,7 +1772,7 @@ end;
 
 procedure TMainForm.LoadHeaderLogo;
 var
-  AppDir, LogoPath, IcoPath: string;
+  AppDir, LogoPath: string;
 begin
   AppDir := ExtractFilePath(ParamStr(0));
   LogoPath := AppDir + 'resources' + PathDelim + 'header_logo_32.png';
@@ -1704,23 +1784,6 @@ begin
   begin
     try
       imgHeaderLogo.Picture.LoadFromFile(LogoPath);
-    except
-    end;
-  end;
-
-  // Load multi-resolution application favicon (.ICO) for window title bar, taskbar, and system tray
-  IcoPath := AppDir + 'NovaMonitor.ico';
-  if not FileExists(IcoPath) then
-    IcoPath := AppDir + 'resources' + PathDelim + 'NovaMonitor.ico';
-  if not FileExists(IcoPath) then
-    IcoPath := AppDir + '..' + PathDelim + '..' + PathDelim + 'NovaMonitor.ico';
-  if FileExists(IcoPath) then
-  begin
-    try
-      Icon.LoadFromFile(IcoPath);
-      Application.Icon.LoadFromFile(IcoPath);
-      if Assigned(FTrayIcon) then
-        FTrayIcon.Icon.LoadFromFile(IcoPath);
     except
     end;
   end;
