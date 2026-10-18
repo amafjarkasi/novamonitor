@@ -1,0 +1,632 @@
+unit Nova.View.Main;
+
+{$IFDEF FPC}
+  {$MODE DELPHI}
+{$ENDIF}
+
+interface
+
+uses
+  SysUtils,
+  Classes,
+  // Windows must precede Types: its RECT type must not shadow Types.Rect()
+  Windows,
+  Types,
+  Graphics,
+  Controls,
+  Forms,
+  Dialogs,
+  StdCtrls,
+  ExtCtrls,
+  ComCtrls,
+  {$IFDEF FPC}
+  ShellApi,
+  {$ELSE}
+  Winapi.ShellApi,
+  {$ENDIF}
+  Nova.Types,
+  Nova.Utils,
+  Nova.ViewModel.Main;
+
+type
+  TMainForm = class(TForm)
+    pnlSidebar: TPanel;
+    pnlHeader: TPanel;
+    pnlContent: TPanel;
+    pnlFooter: TPanel;
+    pnlBrand: TPanel;
+    lblBrandTitle: TLabel;
+    lblBrandSubtitle: TLabel;
+    
+    // Navigation Buttons
+    btnNavDashboard: TButton;
+    btnNavProcesses: TButton;
+    btnNavExport: TButton;
+    btnNavThemeToggle: TButton;
+    pnlNavBottom: TPanel;
+    chkTray: TCheckBox;
+    lblStatusIndicator: TLabel;
+
+    // Header Controls
+    lblPageTitle: TLabel;
+    pnlHeaderActions: TPanel;
+    edtSearch: TEdit;
+    btnToggleMonitor: TButton;
+    btnExportSnapshot: TButton;
+
+    // Metrics Card Container
+    pnlMetricsGrid: TPanel;
+    pbCardCpu: TPaintBox;
+    pbCardRam: TPaintBox;
+    pbCardDisk: TPaintBox;
+    pbCardUptime: TPaintBox;
+
+    // Process Table Container
+    pnlProcessSection: TPanel;
+    pnlTableToolbar: TPanel;
+    lblTableTitle: TLabel;
+    lblProcessCount: TLabel;
+    lvProcesses: TListView;
+
+    // Status Footer
+    lblFooterStatus: TLabel;
+    lblFooterTime: TLabel;
+    SaveDialog: TSaveDialog;
+
+    // Form lifecycle events
+    procedure FormCreate(Sender: TObject);
+    procedure FormShow(Sender: TObject);
+    procedure FormDestroy(Sender: TObject);
+    procedure FormResize(Sender: TObject);
+
+    // Navigation handlers
+    procedure btnNavDashboardClick(Sender: TObject);
+    procedure btnNavProcessesClick(Sender: TObject);
+    procedure btnNavThemeToggleClick(Sender: TObject);
+    procedure btnToggleMonitorClick(Sender: TObject);
+    procedure btnExportSnapshotClick(Sender: TObject);
+    procedure edtSearchChange(Sender: TObject);
+
+    // Custom drawing handlers
+    procedure pbCardCpuPaint(Sender: TObject);
+    procedure pbCardRamPaint(Sender: TObject);
+    procedure pbCardDiskPaint(Sender: TObject);
+    procedure pbCardUptimePaint(Sender: TObject);
+
+    // Process list custom drawing (wired in .lfm/.dfm)
+    procedure lvProcessesCustomDrawItem(Sender: TCustomListView;
+      Item: TListItem; State: TCustomDrawState; var DefaultDraw: Boolean);
+    procedure lvProcessesCustomDrawSubItem(Sender: TCustomListView;
+      Item: TListItem; SubItem: Integer; State: TCustomDrawState;
+      var DefaultDraw: Boolean);
+  private
+    FViewModel: TMainViewModel;
+    FColors: TThemeColors;
+    FInitialized: Boolean;
+    FTrayIcon: TTrayIcon;
+    FActiveView: TAppView;
+
+    procedure OnMetricsUpdated(const AMetrics: TSystemMetrics);
+    procedure OnProcessesUpdated(const AProcesses: TProcessList);
+    procedure OnStatusMessage(const AMessage: string; const AIsError: Boolean);
+    procedure OnThemeChanged(const ATheme: TAppTheme);
+
+    procedure AppMinimize(Sender: TObject);
+    procedure TrayIconClick(Sender: TObject);
+
+    procedure ApplyTheme(const AColors: TThemeColors);
+    procedure SwitchView(const AView: TAppView);
+    procedure RefreshProcessList(const AProcesses: TProcessList);
+    procedure StretchLastColumn;
+    procedure UpdateSortIndicators;
+    procedure lvProcessesData(Sender: TObject; Item: TListItem);
+    {$IFDEF FPC}
+    procedure lvProcessesColumnClick(Sender: TObject; Column: TListColumn);
+    {$ELSE}
+    procedure lvProcessesColumnClick(Sender: TObject; Column: TListColumn;
+      var CanClick: Boolean);
+    {$ENDIF}
+    procedure DrawMetricCard(const APaintBox: TPaintBox; const ATitle: string;
+      const APrimaryVal: string; const ASecondaryVal: string;
+      const APercent: Single; const ABarColor: TColor);
+  public
+    { Public declarations }
+  end;
+
+var
+  MainForm: TMainForm;
+
+implementation
+
+{$IFNDEF FPC}
+  {$R *.dfm}
+{$ELSE}
+  {$R *.lfm}
+{$ENDIF}
+
+
+const
+  // Sort markers as byte/char constants: LCL strings are UTF-8, Delphi's are
+  // UTF-16, and literal #$xx sequences stay correct in both encodings
+  {$IFDEF FPC}
+  AscArrow  = #$E2#$96#$B2; // U+25B2
+  DescArrow = #$E2#$96#$BC; // U+25BC
+  {$ELSE}
+  AscArrow  = #$25B2;
+  DescArrow = #$25BC;
+  {$ENDIF}
+  BaseColumnCaptions: array[0..5] of string =
+    ('PID', 'Process Name', 'CPU %', 'Working Set (RAM)', 'Health Status',
+     'Active Threads');
+
+{ TMainForm }
+
+procedure TMainForm.FormCreate(Sender: TObject);
+begin
+  DoubleBuffered := True;
+  Font.Name := 'Segoe UI';
+  Font.Size := 9;
+  FInitialized := False;
+  FActiveView := avDashboard;
+
+  FViewModel := TMainViewModel.Create;
+  FViewModel.OnMetricsUpdated   := OnMetricsUpdated;
+  FViewModel.OnProcessesUpdated := OnProcessesUpdated;
+  FViewModel.OnStatusMessage    := OnStatusMessage;
+  FViewModel.OnThemeChanged     := OnThemeChanged;
+
+  {$IFDEF FPC}
+  lvProcesses.ColumnClick := True; // LCL gates header clicks on this flag
+  {$ENDIF}
+  lvProcesses.OnColumnClick := lvProcessesColumnClick;
+
+  // Owner-data (virtual) list: rows are served from the ViewModel on demand.
+  // Filling 450 real items via per-item messages costs 400-700ms every
+  // refresh; a virtual list costs ~0 regardless of process count.
+  lvProcesses.OwnerData := True;
+  lvProcesses.OnData := lvProcessesData;
+
+  // Minimize-to-tray: the checkbox gates the behavior chosen at minimize time
+  FTrayIcon := TTrayIcon.Create(Self);
+  if Assigned(Application.Icon) and (not Application.Icon.Empty) then
+    FTrayIcon.Icon.Assign(Application.Icon);
+  FTrayIcon.Hint := 'NovaMonitor';
+  FTrayIcon.OnClick := TrayIconClick;
+  Application.OnMinimize := AppMinimize;
+
+  FColors := FViewModel.ThemeColors;
+  ApplyTheme(FColors);
+  UpdateSortIndicators;
+end;
+
+procedure TMainForm.AppMinimize(Sender: TObject);
+begin
+  if chkTray.Checked then
+  begin
+    FTrayIcon.Visible := True;
+    Hide;
+  end;
+end;
+
+procedure TMainForm.TrayIconClick(Sender: TObject);
+begin
+  Show;
+  WindowState := wsNormal;
+  FTrayIcon.Visible := False;
+end;
+
+procedure TMainForm.FormShow(Sender: TObject);
+begin
+  if not FInitialized then
+  begin
+    FInitialized := True;
+    FViewModel.Initialize;
+  end;
+end;
+
+procedure TMainForm.FormDestroy(Sender: TObject);
+begin
+  FViewModel.Free;
+end;
+
+procedure TMainForm.FormResize(Sender: TObject);
+var
+  CardWidth, CardHeight: Integer;
+  AvailableWidth: Integer;
+  Spacing: Integer;
+begin
+  Spacing := 12;
+  AvailableWidth := pnlMetricsGrid.ClientWidth - (Spacing * 5);
+  CardWidth := AvailableWidth div 4;
+  if CardWidth < 120 then CardWidth := 120;
+  CardHeight := pnlMetricsGrid.ClientHeight - 16;
+  if CardHeight < 40 then CardHeight := 100;
+
+  pbCardCpu.SetBounds(Spacing, 8, CardWidth, CardHeight);
+  pbCardRam.SetBounds(Spacing * 2 + CardWidth, 8, CardWidth, CardHeight);
+  pbCardDisk.SetBounds(Spacing * 3 + CardWidth * 2, 8, CardWidth, CardHeight);
+  pbCardUptime.SetBounds(Spacing * 4 + CardWidth * 3, 8, CardWidth, CardHeight);
+
+  StretchLastColumn;
+end;
+
+procedure TMainForm.StretchLastColumn;
+var
+  I, Used, W: Integer;
+begin
+  if lvProcesses.Columns.Count < 2 then Exit;
+  Used := 0;
+  for I := 0 to lvProcesses.Columns.Count - 2 do
+    Used := Used + lvProcesses.Columns[I].Width;
+  W := lvProcesses.ClientWidth - Used; // ClientWidth already excludes a visible scrollbar
+  if W < 80 then W := 80;
+  lvProcesses.Columns[lvProcesses.Columns.Count - 1].Width := W;
+end;
+
+procedure TMainForm.ApplyTheme(const AColors: TThemeColors);
+begin
+  Color := AColors.Background;
+  pnlSidebar.Color := AColors.SidebarBg;
+  pnlBrand.Color := AColors.SidebarBg;
+  pnlNavBottom.Color := AColors.SidebarBg;
+  lblBrandTitle.Font.Color := AColors.SidebarText;
+  lblBrandSubtitle.Font.Color := AColors.TextSecondary;
+  lblStatusIndicator.Font.Color := AColors.Success;
+
+  pnlHeader.Color := AColors.Surface;
+  lblPageTitle.Font.Color := AColors.TextPrimary;
+  pnlHeaderActions.Color := AColors.Surface;
+
+  pnlContent.Color := AColors.Background;
+  pnlMetricsGrid.Color := AColors.Background;
+
+  pnlProcessSection.Color := AColors.Surface;
+  pnlTableToolbar.Color := AColors.Surface;
+  lblTableTitle.Font.Color := AColors.TextPrimary;
+  lblProcessCount.Font.Color := AColors.TextSecondary;
+
+  lvProcesses.Color := AColors.Surface;
+  lvProcesses.Font.Color := AColors.TextPrimary;
+
+  chkTray.Font.Color := AColors.TextSecondary;
+
+  pnlFooter.Color := AColors.Surface;
+  lblFooterStatus.Font.Color := AColors.TextSecondary;
+  lblFooterTime.Font.Color := AColors.TextSecondary;
+
+  edtSearch.Color := AColors.SurfaceCard;
+  edtSearch.Font.Color := AColors.TextPrimary;
+
+  // Preserve nav button highlight across theme changes
+  if FActiveView = avDashboard then
+  begin
+    btnNavDashboard.Font.Color := AColors.Accent;
+    btnNavProcesses.Font.Color := AColors.SidebarText;
+  end
+  else
+  begin
+    btnNavDashboard.Font.Color := AColors.SidebarText;
+    btnNavProcesses.Font.Color := AColors.Accent;
+  end;
+
+  pbCardCpu.Invalidate;
+  pbCardRam.Invalidate;
+  pbCardDisk.Invalidate;
+  pbCardUptime.Invalidate;
+  lvProcesses.Invalidate;
+end;
+
+procedure TMainForm.OnMetricsUpdated(const AMetrics: TSystemMetrics);
+begin
+  pbCardCpu.Invalidate;
+  pbCardRam.Invalidate;
+  pbCardDisk.Invalidate;
+  pbCardUptime.Invalidate;
+
+  lblFooterTime.Caption := 'Updated: ' + FormatDateTime('hh:nn:ss', AMetrics.Timestamp);
+end;
+
+procedure TMainForm.OnProcessesUpdated(const AProcesses: TProcessList);
+begin
+  RefreshProcessList(AProcesses);
+end;
+
+procedure TMainForm.OnStatusMessage(const AMessage: string; const AIsError: Boolean);
+begin
+  lblFooterStatus.Caption := AMessage;
+  if AIsError then
+    lblFooterStatus.Font.Color := FColors.Danger
+  else
+    lblFooterStatus.Font.Color := FColors.TextSecondary;
+end;
+
+procedure TMainForm.OnThemeChanged(const ATheme: TAppTheme);
+begin
+  FColors := FViewModel.ThemeColors;
+  ApplyTheme(FColors);
+  if ATheme = atDark then
+    btnNavThemeToggle.Caption := 'Theme: Dark'
+  else
+    btnNavThemeToggle.Caption := 'Theme: Light';
+end;
+
+procedure TMainForm.RefreshProcessList(const AProcesses: TProcessList);
+begin
+  lvProcesses.Items.BeginUpdate;
+  try
+    // Virtual mode: only the row count changes; visible rows are fetched
+    // through lvProcessesData during paint
+    lvProcesses.Items.Count := AProcesses.Count;
+    lblProcessCount.Caption := Format('%d processes active', [AProcesses.Count]);
+    StretchLastColumn;
+  finally
+    lvProcesses.Items.EndUpdate;
+  end;
+end;
+
+procedure TMainForm.lvProcessesData(Sender: TObject; Item: TListItem);
+var
+  ProcItem: TProcessItem;
+begin
+  if Item = nil then Exit;
+  if (Item.Index < 0) or (Item.Index >= FViewModel.FilteredProcesses.Count) then Exit;
+  ProcItem := FViewModel.FilteredProcesses[Item.Index];
+  Item.Caption := IntToStr(ProcItem.Id);
+  Item.SubItems.Clear;
+  Item.SubItems.Add(ProcItem.Name);
+  Item.SubItems.Add(TUIUtils.FormatPercent(ProcItem.CpuSharePercent));
+  Item.SubItems.Add(TUIUtils.FormatMegabytes(ProcItem.MemoryWorkingSetMB));
+  Item.SubItems.Add(TUIUtils.StatusToString(ProcItem.Status));
+  Item.SubItems.Add(IntToStr(ProcItem.ThreadCount));
+end;
+
+procedure TMainForm.DrawMetricCard(const APaintBox: TPaintBox; const ATitle: string;
+  const APrimaryVal: string; const ASecondaryVal: string;
+  const APercent: Single; const ABarColor: TColor);
+var
+  C: TCanvas;
+  R, BarR: TRect;
+  Y: Integer;
+const
+  PadX = 14;
+  LineGap = 6;
+begin
+  C := APaintBox.Canvas;
+  R := Rect(0, 0, APaintBox.Width, APaintBox.Height);
+
+  TUIUtils.DrawCard(C, R, FColors.SurfaceCard, FColors.Border, 8);
+
+  // Stack title/value/secondary from measured text heights so the spacing
+  // stays even regardless of font metrics or DPI; bar pinned to the bottom
+  C.Brush.Style := bsClear;
+  C.Font.Name := 'Segoe UI';
+
+  Y := R.Top + 10;
+  C.Font.Size := 9;
+  C.Font.Style := [fsBold];
+  C.Font.Color := FColors.TextSecondary;
+  C.TextOut(R.Left + PadX, Y, ATitle);
+  Inc(Y, C.TextHeight(ATitle) + LineGap);
+
+  C.Font.Size := 15;
+  C.Font.Style := [fsBold];
+  C.Font.Color := FColors.TextPrimary;
+  C.TextOut(R.Left + PadX, Y, APrimaryVal);
+  Inc(Y, C.TextHeight(APrimaryVal) + LineGap);
+
+  C.Font.Size := 8;
+  C.Font.Style := [];
+  C.Font.Color := FColors.TextSecondary;
+  C.TextOut(R.Left + PadX, Y, ASecondaryVal);
+
+  if APercent >= 0 then
+  begin
+    BarR := Rect(R.Left + PadX, R.Bottom - 16, R.Right - PadX, R.Bottom - 10);
+    TUIUtils.DrawProgressBar(C, BarR, APercent, FColors.Border, ABarColor);
+  end;
+end;
+
+procedure TMainForm.lvProcessesCustomDrawItem(Sender: TCustomListView;
+  Item: TListItem; State: TCustomDrawState; var DefaultDraw: Boolean);
+begin
+  if Item = nil then Exit;
+  // Row caption (PID column): reset the font so status styling cannot bleed
+  Sender.Canvas.Font.Color := FColors.TextPrimary;
+  Sender.Canvas.Font.Style := [];
+end;
+
+procedure TMainForm.lvProcessesCustomDrawSubItem(Sender: TCustomListView;
+  Item: TListItem; SubItem: Integer; State: TCustomDrawState;
+  var DefaultDraw: Boolean);
+var
+  ProcItem: TProcessItem;
+begin
+  if (Item = nil) or (Item.Index < 0) or (Item.Index >= FViewModel.FilteredProcesses.Count) then Exit;
+  // SubItem comes 1-based from the Win32 notification: 4 = "Health Status"
+  // (0 = PID caption, 1 = name, 2 = CPU, 3 = working set)
+  if SubItem = 4 then
+  begin
+    ProcItem := FViewModel.FilteredProcesses[Item.Index];
+    Sender.Canvas.Font.Color := TUIUtils.StatusToColor(ProcItem.Status, FColors);
+    Sender.Canvas.Font.Style := [fsBold];
+  end
+  else
+  begin
+    Sender.Canvas.Font.Color := FColors.TextPrimary;
+    Sender.Canvas.Font.Style := [];
+  end;
+end;
+
+procedure TMainForm.pbCardCpuPaint(Sender: TObject);
+var
+  M: TSystemMetrics;
+  BarColor: TColor;
+begin
+  M := FViewModel.LatestMetrics;
+  if M.CpuUsagePercent > 80.0 then
+    BarColor := FColors.Danger
+  else if M.CpuUsagePercent > 50.0 then
+    BarColor := FColors.Warning
+  else
+    BarColor := FColors.Accent;
+
+  DrawMetricCard(pbCardCpu, 'CPU UTILIZATION',
+    TUIUtils.FormatPercent(M.CpuUsagePercent),
+    'Across logical processors',
+    M.CpuUsagePercent, BarColor);
+end;
+
+procedure TMainForm.pbCardRamPaint(Sender: TObject);
+var
+  M: TSystemMetrics;
+begin
+  M := FViewModel.LatestMetrics;
+  DrawMetricCard(pbCardRam, 'MEMORY LOAD',
+    Format('%d%% (%s)', [M.MemoryLoadPercent, TUIUtils.FormatMegabytes(M.UsedPhysicalMB)]),
+    Format('%s free / %s total', [TUIUtils.FormatMegabytes(M.AvailablePhysicalMB), TUIUtils.FormatMegabytes(M.TotalPhysicalMB)]),
+    M.MemoryLoadPercent, FColors.Accent);
+end;
+
+procedure TMainForm.pbCardDiskPaint(Sender: TObject);
+var
+  M: TSystemMetrics;
+begin
+  M := FViewModel.LatestMetrics;
+  DrawMetricCard(pbCardDisk, 'SYSTEM STORAGE',
+    Format('%.1f%% Used', [M.DiskUsagePercent]),
+    Format('%.1f GB Free of %.1f GB', [M.FreeDiskGB, M.TotalDiskGB]),
+    M.DiskUsagePercent, FColors.Success);
+end;
+
+procedure TMainForm.pbCardUptimePaint(Sender: TObject);
+var
+  M: TSystemMetrics;
+begin
+  M := FViewModel.LatestMetrics;
+  DrawMetricCard(pbCardUptime, 'SYSTEM UPTIME',
+    TUIUtils.FormatDuration(M.UptimeSeconds),
+    Format('%d active processes', [M.ActiveProcessCount]),
+    -1, FColors.Accent);
+end;
+
+procedure TMainForm.btnToggleMonitorClick(Sender: TObject);
+begin
+  FViewModel.ToggleMonitoring;
+  if FViewModel.IsMonitoring then
+  begin
+    btnToggleMonitor.Caption := 'Pause';
+    lblStatusIndicator.Caption := 'Status: Active';
+    lblStatusIndicator.Font.Color := FColors.Success;
+  end
+  else
+  begin
+    btnToggleMonitor.Caption := 'Resume';
+    lblStatusIndicator.Caption := 'Status: Paused';
+    lblStatusIndicator.Font.Color := FColors.Warning;
+  end;
+end;
+
+procedure TMainForm.UpdateSortIndicators;
+var
+  I: Integer;
+begin
+  for I := 0 to lvProcesses.Columns.Count - 1 do
+  begin
+    if I > High(BaseColumnCaptions) then Break;
+    if I = FViewModel.SortColumn then
+    begin
+      if FViewModel.SortAscending then
+        lvProcesses.Columns[I].Caption := BaseColumnCaptions[I] + ' ' + AscArrow
+      else
+        lvProcesses.Columns[I].Caption := BaseColumnCaptions[I] + ' ' + DescArrow;
+    end
+    else
+      lvProcesses.Columns[I].Caption := BaseColumnCaptions[I];
+  end;
+end;
+
+{$IFDEF FPC}
+procedure TMainForm.lvProcessesColumnClick(Sender: TObject; Column: TListColumn);
+begin
+  // SetSort re-filters and fires OnProcessesUpdated, which refreshes the list
+  FViewModel.SetSort(Column.Index);
+  UpdateSortIndicators;
+end;
+{$ELSE}
+procedure TMainForm.lvProcessesColumnClick(Sender: TObject; Column: TListColumn;
+  var CanClick: Boolean);
+begin
+  FViewModel.SetSort(Column.Index);
+  UpdateSortIndicators;
+end;
+{$ENDIF}
+
+procedure TMainForm.SwitchView(const AView: TAppView);
+var
+  IsDash: Boolean;
+begin
+  FActiveView := AView;
+  IsDash := (AView = avDashboard);
+
+  pnlMetricsGrid.Visible := IsDash;
+
+  if IsDash then
+  begin
+    lblPageTitle.Caption := 'System Performance';
+    lblFooterStatus.Caption := 'Dashboard view';
+  end
+  else
+  begin
+    lblPageTitle.Caption := 'Process Inspector';
+    lblFooterStatus.Caption := 'Inspector view - type to filter processes';
+    edtSearch.SetFocus;
+  end;
+  lblFooterStatus.Font.Color := FColors.TextSecondary;
+
+  // Highlight the active nav button
+  if IsDash then
+  begin
+    btnNavDashboard.Font.Color := FColors.Accent;
+    btnNavProcesses.Font.Color := FColors.SidebarText;
+  end
+  else
+  begin
+    btnNavDashboard.Font.Color := FColors.SidebarText;
+    btnNavProcesses.Font.Color := FColors.Accent;
+  end;
+end;
+
+procedure TMainForm.btnNavDashboardClick(Sender: TObject);
+begin
+  SwitchView(avDashboard);
+end;
+
+procedure TMainForm.btnNavProcessesClick(Sender: TObject);
+begin
+  SwitchView(avInspector);
+end;
+
+procedure TMainForm.btnNavThemeToggleClick(Sender: TObject);
+begin
+  FViewModel.ToggleTheme;
+end;
+
+procedure TMainForm.edtSearchChange(Sender: TObject);
+begin
+  FViewModel.SetSearchFilter(edtSearch.Text);
+end;
+
+procedure TMainForm.btnExportSnapshotClick(Sender: TObject);
+begin
+  SaveDialog.Filter := 'JSON Snapshot (*.json)|*.json|CSV Spreadsheet (*.csv)|*.csv';
+  SaveDialog.FileName := Format('NovaTelemetry_%s.json', [FormatDateTime('yyyymmdd_hhnnss', Now)]);
+  if SaveDialog.Execute then
+  begin
+    FViewModel.ExportReport(SaveDialog.FileName);
+    lblPageTitle.Caption := 'Export Complete';
+    lblFooterStatus.Caption := Format('Saved: %s', [SaveDialog.FileName]);
+    lblFooterStatus.Font.Color := FColors.Success;
+  end;
+end;
+
+end.

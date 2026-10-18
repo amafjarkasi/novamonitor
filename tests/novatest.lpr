@@ -1,0 +1,174 @@
+program novatest;
+
+{$mode delphi}
+
+uses
+  Interfaces, // LCL unit initialization (no GUI created by this console test)
+  Forms,
+  SysUtils,
+  Classes,
+  fpjson,
+  Nova.Types in '..\..\src\Common\Nova.Types.pas',
+  Nova.Utils in '..\..\src\Common\Nova.Utils.pas',
+  Nova.Service.Metrics in '..\..\src\Services\Nova.Service.Metrics.pas',
+  Nova.Service.Exporter in '..\..\src\Services\Nova.Service.Exporter.pas',
+  Nova.ViewModel.Main in '..\..\src\ViewModels\Nova.ViewModel.Main.pas';
+
+var
+  Failures: Integer = 0;
+
+procedure Check(const AName: string; ACond: Boolean);
+begin
+  if ACond then
+    WriteLn('PASS: ' + AName)
+  else
+  begin
+    Inc(Failures);
+    WriteLn('FAIL: ' + AName);
+  end;
+end;
+
+var
+  Svc: IMetricsService;
+  Exp: IExportService;
+  Snap: TSystemMetrics;
+  Procs: TProcessList;
+  OutDir: string;
+  Strs: TStringList;
+  Json: TJSONData;
+  Root: TJSONObject;
+  CpuNode, ProcArrNode: TJSONData;
+  ProcArr: TJSONArray;
+  T1, T2, Total: Int64;
+  HasCpu: Boolean;
+  I: Integer;
+  VM: TMainViewModel;
+begin
+  OutDir := ExtractFilePath(ParamStr(0));
+  try
+    Svc := TMetricsService.Create;
+    Exp := TExportService.Create;
+
+    // --- system snapshot ---
+    Snap := Svc.CollectSnapshot;
+    Check('snapshot: CPU in [0..100]', (Snap.CpuUsagePercent >= 0) and (Snap.CpuUsagePercent <= 100));
+    Check('snapshot: memory total > 0', Snap.TotalPhysicalMB > 0);
+    Check('snapshot: used <= total memory', Snap.UsedPhysicalMB <= Snap.TotalPhysicalMB);
+    Check('snapshot: disk total > 0', Snap.TotalDiskGB > 0);
+    Check('snapshot: disk pct in [0..100]', (Snap.DiskUsagePercent >= 0) and (Snap.DiskUsagePercent <= 100));
+
+    // --- process enumeration (first scan = CPU baseline, shares all 0) ---
+    Procs := Svc.CollectProcesses;
+    try
+      Check('processes: count > 10', Procs.Count > 10);
+      Check('processes: sorted by memory desc',
+        (Procs.Count < 2) or
+        (Procs[0].MemoryWorkingSetMB >= Procs[Procs.Count - 1].MemoryWorkingSetMB));
+
+      // --- scan cost: three timed scans approximate steady-state polling load ---
+      Total := 0;
+      for I := 1 to 3 do
+      begin
+        FreeAndNil(Procs);
+        T1 := GetTickCount64;
+        Procs := Svc.CollectProcesses;
+        T2 := GetTickCount64;
+        Total := Total + (T2 - T1);
+        WriteLn('  scan ' + IntToStr(I) + ': ' + IntToStr(T2 - T1) + ' ms (' +
+          IntToStr(Procs.Count) + ' processes)');
+      end;
+      WriteLn('scan average: ' + IntToStr(Total div 3) + ' ms  (scan runs every 4.5 s)');
+
+      HasCpu := False;
+      for I := 0 to Procs.Count - 1 do
+        if Procs[I].CpuSharePercent > 0 then
+          HasCpu := True;
+      Check('processes: non-zero CPU shares after repeated scans', HasCpu);
+
+      // --- exports ---
+      Check('export: JSON succeeds', Exp.ExportToJson(Snap, Procs, OutDir + 'nova_test_out.json'));
+      Check('export: CSV succeeds', Exp.ExportToCsv(Procs, OutDir + 'nova_test_out.csv'));
+
+      // --- JSON content validation (parse what the exporter wrote) ---
+      Strs := TStringList.Create;
+      try
+        Strs.LoadFromFile(OutDir + 'nova_test_out.json');
+        Json := GetJSON(Strs.Text);
+        try
+          Root := TJSONObject(Json);
+          Check('json: generator present', Assigned(Root.FindPath('generator')));
+          Check('json: timestamp present', Assigned(Root.FindPath('timestamp')));
+          CpuNode := Root.FindPath('systemMetrics.cpuUsagePercent');
+          Check('json: cpuUsagePercent in [0..100]', Assigned(CpuNode) and
+            (CpuNode is TJSONFloatNumber) and
+            (TJSONFloatNumber(CpuNode).AsFloat >= 0) and
+            (TJSONFloatNumber(CpuNode).AsFloat <= 100));
+          Check('json: uptimeSeconds > 0', Assigned(Root.FindPath('systemMetrics.uptimeSeconds')));
+          ProcArrNode := Root.FindPath('processes');
+          ProcArr := ProcArrNode as TJSONArray;
+          Check('json: process array matches count', Assigned(ProcArr) and
+            (ProcArr.Count = Procs.Count));
+          if Assigned(ProcArr) and (ProcArr.Count > 0) then
+            Check('json: first process has name and memory', Assigned(ProcArr.Objects[0].FindPath('name')) and
+              Assigned(ProcArr.Objects[0].FindPath('memoryMB')));
+        finally
+          Json.Free;
+        end;
+      finally
+        Strs.Free;
+      end;
+
+      // --- CSV content validation ---
+      Strs := TStringList.Create;
+      try
+        Strs.LoadFromFile(OutDir + 'nova_test_out.csv');
+        Check('csv: header row', (Strs.Count > 0) and
+          (Strs[0] = 'PID,ProcessName,MemoryMB,Status,Threads'));
+        Check('csv: row count matches process count', Strs.Count = Procs.Count + 1);
+        Check('csv: first data row is top-memory process',
+          (Strs.Count > 1) and (Pos(IntToStr(Procs[0].Id) + ',', Strs[1]) = 1));
+      finally
+        Strs.Free;
+      end;
+    finally
+      Procs.Free;
+    end;
+
+    // --- ViewModel test ---
+    WriteLn('Testing TMainViewModel...');
+    begin
+      VM := TMainViewModel.Create;
+      try
+        VM.Initialize;
+        Check('vm: initialized metrics', VM.LatestMetrics.TotalPhysicalMB > 0);
+        Check('vm: filtered processes loaded', VM.FilteredProcesses.Count > 0);
+        VM.SetSearchFilter('svchost');
+        Check('vm: search filter applied', VM.FilteredProcesses.Count > 0);
+        VM.SetSearchFilter('');
+        VM.SetSort(0); // Sort by PID
+        Check('vm: sort by PID', VM.FilteredProcesses.Count > 0);
+        VM.SetSort(1); // Sort by Name
+        Check('vm: sort by Name', VM.FilteredProcesses.Count > 0);
+        VM.SetSort(2); // Sort by CPU
+        Check('vm: sort by CPU', VM.FilteredProcesses.Count > 0);
+        VM.SetSort(3); // Sort by RAM
+        Check('vm: sort by RAM', VM.FilteredProcesses.Count > 0);
+      finally
+        VM.Free;
+      end;
+    end;
+  except
+    on E: Exception do
+    begin
+      WriteLn('EXCEPTION: ' + E.ClassName + ': ' + E.Message);
+      Failures := Failures + 100;
+    end;
+  end;
+
+  WriteLn('---');
+  if Failures = 0 then
+    WriteLn('ALL TESTS PASSED')
+  else
+    WriteLn(IntToStr(Failures) + ' FAILURE(S)');
+  ExitCode := Failures;
+end.

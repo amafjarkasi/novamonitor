@@ -1,0 +1,27 @@
+# Build output
+bin/
+lib/
+tests/lib/
+
+# Lazarus / FPC artifacts
+*.compiled
+*.o
+*.ppu
+*.a
+*.res
+backup/
+.zcode/
+
+# Delphi artifacts
+*.dcu
+*.local
+*.identcache
+*.projdata
+
+# Runtime logs
+*.log
+
+# IDE / OS noise
+*.dsk
+Thumbs.db
+.DS_Store
