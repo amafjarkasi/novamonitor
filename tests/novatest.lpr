@@ -49,6 +49,9 @@ var
   Arr: TSingleDynArray;
   AllPass: Boolean;
   BlendedCol: TColor;
+  NetList: TNetworkConnectionList;
+  SvcList: TServiceList;
+  HasTcp, HasLocalPort, HasRunning, HasChildLevel, HasImagePath, HasUser: Boolean;
 begin
   OutDir := ExtractFilePath(ParamStr(0));
   try
@@ -227,6 +230,80 @@ begin
 
         VM.SetFilterMode(fmAll);
         Check('vm: filter mode fmAll resets', (VM.FilterMode = fmAll) and (VM.FilteredProcesses.Count > 0));
+      finally
+        VM.Free;
+      end;
+    end;
+
+    // --- Network Connections test ---
+    WriteLn('Testing Network Connections Collection...');
+    begin
+      NetList := Svc.CollectNetworkConnections;
+      try
+        Check('network: connections collected', NetList.Count > 0);
+        HasTcp := False;
+        HasLocalPort := False;
+        for I := 0 to NetList.Count - 1 do
+        begin
+          if NetList[I].Protocol = 'TCP' then HasTcp := True;
+          if NetList[I].LocalPort > 0 then HasLocalPort := True;
+        end;
+        Check('network: contains TCP connections', HasTcp);
+        Check('network: contains valid local port numbers', HasLocalPort);
+      finally
+        NetList.Free;
+      end;
+    end;
+
+    // --- Windows Services test ---
+    WriteLn('Testing Windows Services Collection...');
+    begin
+      SvcList := Svc.CollectServices;
+      try
+        Check('services: services collected', SvcList.Count > 0);
+        HasRunning := False;
+        for I := 0 to SvcList.Count - 1 do
+          if SvcList[I].StateString = 'Running' then
+            HasRunning := True;
+        Check('services: contains running services', HasRunning);
+      finally
+        SvcList.Free;
+      end;
+    end;
+
+    // --- Process Tree View & Extended Metadata test ---
+    WriteLn('Testing Process Tree & Extended Attributes...');
+    begin
+      VM := TMainViewModel.Create;
+      try
+        VM.Initialize;
+        Check('tree: default flat mode has treelevel 0',
+          (VM.FilteredProcesses.Count > 0) and (VM.FilteredProcesses[0].TreeLevel = 0));
+        VM.ToggleTreeView;
+        Check('tree: tree mode enabled', VM.IsTreeView);
+        HasChildLevel := False;
+        for I := 0 to VM.FilteredProcesses.Count - 1 do
+          if VM.FilteredProcesses[I].TreeLevel > 0 then
+            HasChildLevel := True;
+        Check('tree: contains child processes with treelevel > 0', HasChildLevel);
+
+        HasImagePath := False;
+        HasUser := False;
+        for I := 0 to VM.FilteredProcesses.Count - 1 do
+        begin
+          if VM.FilteredProcesses[I].ImagePath <> '' then HasImagePath := True;
+          if VM.FilteredProcesses[I].UserName <> '' then HasUser := True;
+        end;
+        Check('metadata: contains processes with image path', HasImagePath);
+        Check('metadata: contains processes with user account', HasUser);
+
+        // Network & Services ViewModel integration
+        VM.SetActiveView(avNetwork);
+        Check('vm: network view populated', VM.NetworkConnections.Count > 0);
+        VM.SetActiveView(avServices);
+        Check('vm: services view populated', VM.Services.Count > 0);
+        VM.SetServiceStatusFilter(1); // Running
+        Check('vm: services running filter applied', VM.Services.Count > 0);
       finally
         VM.Free;
       end;

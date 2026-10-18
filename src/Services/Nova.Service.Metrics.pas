@@ -45,6 +45,12 @@ type
     procedure StopPolling;
   end;
 
+  TProcessMeta = record
+    ImagePath: string;
+    UserName: string;
+    Architecture: string;
+  end;
+
   /// <summary>
   /// Thread-safe Windows System Metrics gathering service
   /// </summary>
@@ -59,6 +65,7 @@ type
     // Per-PID CPU sampling: kernel+user time totals from the previous scan
     FPrevProcTimes: TDictionary<Cardinal, Int64>;
     FCurProcTimes: TDictionary<Cardinal, Int64>;
+    FProcMetaCache: TDictionary<Cardinal, TProcessMeta>;
     FHasPrevProcSample: Boolean;
     FPrevProcTotalTime: Int64;
 
@@ -74,6 +81,8 @@ type
     function IsMonitoring: Boolean;
     function CollectSnapshot: TSystemMetrics;
     function CollectProcesses: TProcessList;
+    function CollectNetworkConnections: TNetworkConnectionList;
+    function CollectServices: TServiceList;
     function TerminateProcessById(const AProcessId: Cardinal): Boolean;
   end;
 
@@ -169,6 +178,7 @@ begin
   FPrevUserTime := 0;
   FPrevProcTimes := TDictionary<Cardinal, Int64>.Create;
   FCurProcTimes := TDictionary<Cardinal, Int64>.Create;
+  FProcMetaCache := TDictionary<Cardinal, TProcessMeta>.Create;
   FHasPrevProcSample := False;
   FPrevProcTotalTime := 0;
 end;
@@ -176,6 +186,7 @@ end;
 destructor TMetricsService.Destroy;
 begin
   StopMonitoring;
+  FProcMetaCache.Free;
   FCurProcTimes.Free;
   FPrevProcTimes.Free;
   FLock.Free;
@@ -225,11 +236,75 @@ type
     szExeFile: array[0..259] of AnsiChar;
   end;
 
+  // Network API types (iphlpapi.dll)
+  TMibTcpRowOwnerPid = packed record
+    dwState: DWORD;
+    dwLocalAddr: DWORD;
+    dwLocalPort: DWORD;
+    dwRemoteAddr: DWORD;
+    dwRemotePort: DWORD;
+    dwOwningPid: DWORD;
+  end;
+
+  TMibTcpTableOwnerPid = packed record
+    dwNumEntries: DWORD;
+    table: array[0..0] of TMibTcpRowOwnerPid;
+  end;
+  PMibTcpTableOwnerPid = ^TMibTcpTableOwnerPid;
+
+  TMibUdpRowOwnerPid = packed record
+    dwLocalAddr: DWORD;
+    dwLocalPort: DWORD;
+    dwOwningPid: DWORD;
+  end;
+
+  TMibUdpTableOwnerPid = packed record
+    dwNumEntries: DWORD;
+    table: array[0..0] of TMibUdpRowOwnerPid;
+  end;
+  PMibUdpTableOwnerPid = ^TMibUdpTableOwnerPid;
+
+  // Service Control Manager types (advapi32.dll)
+  TServiceStatusProcess = record
+    dwServiceType: DWORD;
+    dwCurrentState: DWORD;
+    dwControlsAccepted: DWORD;
+    dwWin32ExitCode: DWORD;
+    dwServiceSpecificExitCode: DWORD;
+    dwCheckPoint: DWORD;
+    dwWaitHint: DWORD;
+    dwProcessId: DWORD;
+    dwServiceFlags: DWORD;
+  end;
+
+  TEnumServiceStatusProcessW = record
+    lpServiceName: PWideChar;
+    lpDisplayName: PWideChar;
+    ServiceStatusProcess: TServiceStatusProcess;
+  end;
+  PEnumServiceStatusProcessW = ^TEnumServiceStatusProcessW;
+
 const
-  // Local declarations shadow Windows-unit constants where present;
-  // older FPC/Delphi Windows units may lack them
+  // Local declarations shadow Windows-unit constants where present
   PROCESS_QUERY_LIMITED_INFORMATION = $1000;
   TH32CS_SNAPPROCESS = $2;
+
+  TCP_TABLE_OWNER_PID_ALL = 5;
+  UDP_TABLE_OWNER_PID = 1;
+  AF_INET = 2;
+
+  SC_MANAGER_ENUMERATE_SERVICE = $0004;
+  SC_ENUM_PROCESS_INFO = 0;
+  SERVICE_WIN32 = $00000030;
+  SERVICE_STATE_ALL = $00000003;
+
+  SERVICE_STOPPED          = $00000001;
+  SERVICE_START_PENDING    = $00000002;
+  SERVICE_STOP_PENDING     = $00000003;
+  SERVICE_RUNNING          = $00000004;
+  SERVICE_CONTINUE_PENDING = $00000005;
+  SERVICE_PAUSE_PENDING    = $00000006;
+  SERVICE_PAUSED           = $00000007;
 
 function GlobalMemoryStatusEx(var lpBuffer: TWinMemoryStatusEx): BOOL; stdcall; external 'kernel32.dll';
 function GetSystemTimes(lpIdleTime, lpKernelTime, lpUserTime: PFileTime): BOOL; stdcall; external 'kernel32.dll';
@@ -237,10 +312,65 @@ function GetProcessMemoryInfo(hProcess: THandle; ppsmemCounters: PWinProcessMemo
 function CreateToolhelp32Snapshot(dwFlags: DWORD; th32ProcessID: DWORD): THandle; stdcall; external 'kernel32.dll';
 function Process32First(hSnapshot: THandle; var lpEntry: TWinProcessEntry32): BOOL; stdcall; external 'kernel32.dll';
 function Process32Next(hSnapshot: THandle; var lpEntry: TWinProcessEntry32): BOOL; stdcall; external 'kernel32.dll';
+function QueryFullProcessImageNameW(hProcess: THandle; dwFlags: DWORD; lpExeName: PWideChar; var lpdwSize: DWORD): BOOL; stdcall; external 'kernel32.dll' name 'QueryFullProcessImageNameW';
+function IsWow64Process(hProcess: THandle; var Wow64Process: BOOL): BOOL; stdcall; external 'kernel32.dll' name 'IsWow64Process';
+
+function OpenProcessToken(ProcessHandle: THandle; DesiredAccess: DWORD; var TokenHandle: THandle): BOOL; stdcall; external 'advapi32.dll' name 'OpenProcessToken';
+function GetTokenInformation(TokenHandle: THandle; TokenInformationClass: DWORD; TokenInformation: Pointer; TokenInformationLength: DWORD; var ReturnLength: DWORD): BOOL; stdcall; external 'advapi32.dll' name 'GetTokenInformation';
+function LookupAccountSidW(lpSystemName: PWideChar; Sid: Pointer; Name: PWideChar; var cchName: DWORD; ReferencedDomainName: PWideChar; var cchReferencedDomainName: DWORD; var peUse: DWORD): BOOL; stdcall; external 'advapi32.dll' name 'LookupAccountSidW';
+
+function OpenSCManagerW(lpMachineName, lpDatabaseName: PWideChar; dwDesiredAccess: DWORD): THandle; stdcall; external 'advapi32.dll' name 'OpenSCManagerW';
+function EnumServicesStatusExW(hSCManager: THandle; InfoLevel, dwServiceType, dwServiceState: DWORD; lpServices: Pointer; cbBufSize: DWORD; var pcbBytesNeeded, lpServicesReturned, lpResumeHandle: DWORD; pszGroupName: PWideChar): BOOL; stdcall; external 'advapi32.dll' name 'EnumServicesStatusExW';
+function CloseServiceHandle(hSCObject: THandle): BOOL; stdcall; external 'advapi32.dll' name 'CloseServiceHandle';
+
+function GetExtendedTcpTable(pTcpTable: Pointer; pdwSize: PDWORD; bOrder: BOOL; ulAf: ULONG; TableClass: Integer; Reserved: ULONG): DWORD; stdcall; external 'iphlpapi.dll' name 'GetExtendedTcpTable';
+function GetExtendedUdpTable(pUdpTable: Pointer; pdwSize: PDWORD; bOrder: BOOL; ulAf: ULONG; TableClass: Integer; Reserved: ULONG): DWORD; stdcall; external 'iphlpapi.dll' name 'GetExtendedUdpTable';
 
 function FileTimeToLargeInt(const FT: TFileTime): Int64;
 begin
   Result := (Int64(FT.dwHighDateTime) shl 32) or FT.dwLowDateTime;
+end;
+
+function GetProcessOwner(const AProcessHandle: THandle): string;
+var
+  HToken: THandle;
+  TokSize: DWORD;
+  TokUser: Pointer;
+  NameLen, DomLen: DWORD;
+  SidUse: DWORD;
+  NameBuf, DomBuf: array[0..255] of WideChar;
+begin
+  Result := '';
+  if OpenProcessToken(AProcessHandle, TOKEN_QUERY, HToken) then
+  begin
+    try
+      TokSize := 0;
+      GetTokenInformation(HToken, 1 { TokenUser }, nil, 0, TokSize);
+      if TokSize > 0 then
+      begin
+        GetMem(TokUser, TokSize);
+        try
+          if GetTokenInformation(HToken, 1 { TokenUser }, TokUser, TokSize, TokSize) then
+          begin
+            NameLen := 256;
+            DomLen := 256;
+            SidUse := 0;
+            if LookupAccountSidW(nil, PPointer(TokUser)^, @NameBuf[0], NameLen, @DomBuf[0], DomLen, SidUse) then
+            begin
+              if DomLen > 0 then
+                Result := WideCharToString(DomBuf) + '\' + WideCharToString(NameBuf)
+              else
+                Result := WideCharToString(NameBuf);
+            end;
+          end;
+        finally
+          FreeMem(TokUser);
+        end;
+      end;
+    finally
+      CloseHandle(HToken);
+    end;
+  end;
 end;
 {$ENDIF}
 
@@ -367,6 +497,10 @@ var
   ProcId: Cardinal;
   ProcTotal, TotalNow, TotalDelta, PrevProc: Int64;
   CpuPct: Single;
+  Meta: TProcessMeta;
+  PathBuf: WideString;
+  PathLen: DWORD;
+  IsWow64: BOOL;
 begin
   Result := TProcessList.Create(True);
 
@@ -391,6 +525,12 @@ begin
         ProcId := Entry.th32ProcessID;
         MemMB := 0.0;
         ProcTotal := 0;
+
+        // Extended process metadata: path, owner user, architecture
+        Meta.ImagePath := '';
+        Meta.UserName := '';
+        Meta.Architecture := '64-bit';
+
         ProcHandle := OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, ProcId);
         if ProcHandle <> 0 then
         try
@@ -400,8 +540,41 @@ begin
           // Kernel+user CPU time totals; sampled against the previous scan
           if GetProcessTimes(ProcHandle, CreationT, ExitT, ProcKernelT, ProcUserT) then
             ProcTotal := FileTimeToLargeInt(ProcKernelT) + FileTimeToLargeInt(ProcUserT);
+
+          if not FProcMetaCache.TryGetValue(ProcId, Meta) then
+          begin
+            PathLen := 512;
+            SetLength(PathBuf, PathLen);
+            if QueryFullProcessImageNameW(ProcHandle, 0, PWideChar(PathBuf), PathLen) then
+            begin
+              SetLength(PathBuf, PathLen);
+              Meta.ImagePath := PathBuf;
+            end;
+
+            IsWow64 := False;
+            if IsWow64Process(ProcHandle, IsWow64) then
+            begin
+              if IsWow64 then Meta.Architecture := '32-bit' else Meta.Architecture := '64-bit';
+            end;
+
+            Meta.UserName := GetProcessOwner(ProcHandle);
+            FProcMetaCache.AddOrSetValue(ProcId, Meta);
+          end;
         finally
           CloseHandle(ProcHandle);
+        end
+        else
+        begin
+          if not FProcMetaCache.TryGetValue(ProcId, Meta) then
+          begin
+            if ProcId = 4 then
+            begin
+              Meta.UserName := 'NT AUTHORITY\SYSTEM';
+              Meta.ImagePath := 'ntoskrnl.exe';
+              Meta.Architecture := '64-bit';
+            end;
+            FProcMetaCache.AddOrSetValue(ProcId, Meta);
+          end;
         end;
         FCurProcTimes.AddOrSetValue(ProcId, ProcTotal);
 
@@ -435,6 +608,11 @@ begin
           Status,
           Entry.cntThreads,
           '');
+
+        Item.ParentId := Entry.th32ParentProcessID;
+        Item.ImagePath := Meta.ImagePath;
+        Item.UserName := Meta.UserName;
+        Item.Architecture := Meta.Architecture;
 
         // Keep largest memory consumers first; sorted insertion instead of a
         // comparer callback (FPC 3.2 stable has no anonymous methods)
@@ -512,5 +690,239 @@ begin
     end;
   end;
 end;
+
+function TMetricsService.CollectNetworkConnections: TNetworkConnectionList;
+{$IFDEF MSWINDOWS}
+var
+  TcpSize, UdpSize: DWORD;
+  TcpBuf, UdpBuf: Pointer;
+  TcpTable: PMibTcpTableOwnerPid;
+  UdpTable: PMibUdpTableOwnerPid;
+  I: Integer;
+  Pid: Cardinal;
+  PName, LocalIp, RemoteIp, StateStr: string;
+  LocalPort, RemotePort: Word;
+  Snap: THandle;
+  Entry: TWinProcessEntry32;
+  ProcNames: TDictionary<Cardinal, string>;
+begin
+  Result := TNetworkConnectionList.Create(True);
+  ProcNames := TDictionary<Cardinal, string>.Create;
+  try
+    // Build quick PID -> Name map
+    Snap := CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if Snap <> INVALID_HANDLE_VALUE then
+    begin
+      try
+        FillChar(Entry, SizeOf(Entry), 0);
+        Entry.dwSize := SizeOf(Entry);
+        if Process32First(Snap, Entry) then
+        repeat
+          ProcNames.AddOrSetValue(Entry.th32ProcessID, StrPas(Entry.szExeFile));
+        until not Process32Next(Snap, Entry);
+      finally
+        CloseHandle(Snap);
+      end;
+    end;
+
+    // 1. TCP Connections
+    TcpSize := 0;
+    GetExtendedTcpTable(nil, @TcpSize, True, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
+    if TcpSize > 0 then
+    begin
+      GetMem(TcpBuf, TcpSize);
+      try
+        if GetExtendedTcpTable(TcpBuf, @TcpSize, True, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0) = 0 then
+        begin
+          TcpTable := PMibTcpTableOwnerPid(TcpBuf);
+          for I := 0 to Integer(TcpTable^.dwNumEntries) - 1 do
+          begin
+            Pid := TcpTable^.table[I].dwOwningPid;
+            if not ProcNames.TryGetValue(Pid, PName) then
+              PName := Format('PID %d', [Pid]);
+
+            LocalIp := Format('%d.%d.%d.%d', [
+              TcpTable^.table[I].dwLocalAddr and $FF,
+              (TcpTable^.table[I].dwLocalAddr shr 8) and $FF,
+              (TcpTable^.table[I].dwLocalAddr shr 16) and $FF,
+              (TcpTable^.table[I].dwLocalAddr shr 24) and $FF]);
+            LocalPort := ((TcpTable^.table[I].dwLocalPort and $FF) shl 8) or
+                         ((TcpTable^.table[I].dwLocalPort shr 8) and $FF);
+
+            RemoteIp := Format('%d.%d.%d.%d', [
+              TcpTable^.table[I].dwRemoteAddr and $FF,
+              (TcpTable^.table[I].dwRemoteAddr shr 8) and $FF,
+              (TcpTable^.table[I].dwRemoteAddr shr 16) and $FF,
+              (TcpTable^.table[I].dwRemoteAddr shr 24) and $FF]);
+            RemotePort := ((TcpTable^.table[I].dwRemotePort and $FF) shl 8) or
+                          ((TcpTable^.table[I].dwRemotePort shr 8) and $FF);
+
+            case TcpTable^.table[I].dwState of
+              1: StateStr := 'CLOSED';
+              2: StateStr := 'LISTENING';
+              3: StateStr := 'SYN_SENT';
+              4: StateStr := 'SYN_RCVD';
+              5: StateStr := 'ESTABLISHED';
+              6: StateStr := 'FIN_WAIT1';
+              7: StateStr := 'FIN_WAIT2';
+              8: StateStr := 'CLOSE_WAIT';
+              9: StateStr := 'CLOSING';
+              10: StateStr := 'LAST_ACK';
+              11: StateStr := 'TIME_WAIT';
+              12: StateStr := 'DELETE_TCB';
+            else
+              StateStr := 'UNKNOWN';
+            end;
+
+            Result.Add(TNetworkConnectionItem.Create(
+              Pid, PName, 'TCP', LocalIp, LocalPort, RemoteIp, RemotePort, StateStr
+            ));
+          end;
+        end;
+      finally
+        FreeMem(TcpBuf);
+      end;
+    end;
+
+    // 2. UDP Endpoints
+    UdpSize := 0;
+    GetExtendedUdpTable(nil, @UdpSize, True, AF_INET, UDP_TABLE_OWNER_PID, 0);
+    if UdpSize > 0 then
+    begin
+      GetMem(UdpBuf, UdpSize);
+      try
+        if GetExtendedUdpTable(UdpBuf, @UdpSize, True, AF_INET, UDP_TABLE_OWNER_PID, 0) = 0 then
+        begin
+          UdpTable := PMibUdpTableOwnerPid(UdpBuf);
+          for I := 0 to Integer(UdpTable^.dwNumEntries) - 1 do
+          begin
+            Pid := UdpTable^.table[I].dwOwningPid;
+            if not ProcNames.TryGetValue(Pid, PName) then
+              PName := Format('PID %d', [Pid]);
+
+            LocalIp := Format('%d.%d.%d.%d', [
+              UdpTable^.table[I].dwLocalAddr and $FF,
+              (UdpTable^.table[I].dwLocalAddr shr 8) and $FF,
+              (UdpTable^.table[I].dwLocalAddr shr 16) and $FF,
+              (UdpTable^.table[I].dwLocalAddr shr 24) and $FF]);
+            LocalPort := ((UdpTable^.table[I].dwLocalPort and $FF) shl 8) or
+                         ((UdpTable^.table[I].dwLocalPort shr 8) and $FF);
+
+            Result.Add(TNetworkConnectionItem.Create(
+              Pid, PName, 'UDP', LocalIp, LocalPort, '*.*.*.*', 0, 'LISTENING'
+            ));
+          end;
+        end;
+      finally
+        FreeMem(UdpBuf);
+      end;
+    end;
+
+  finally
+    ProcNames.Free;
+  end;
+end;
+{$ELSE}
+begin
+  Result := TNetworkConnectionList.Create(True);
+  Result.Add(TNetworkConnectionItem.Create(1024, 'system', 'TCP', '127.0.0.1', 8080, '0.0.0.0', 0, 'LISTENING'));
+  Result.Add(TNetworkConnectionItem.Create(3812, 'NovaMonitor', 'TCP', '192.168.1.100', 54321, '142.250.190.46', 443, 'ESTABLISHED'));
+end;
+{$ENDIF}
+
+function TMetricsService.CollectServices: TServiceList;
+{$IFDEF MSWINDOWS}
+var
+  HSCM: THandle;
+  BytesNeeded, ServicesReturned, ResumeHandle: DWORD;
+  Buffer: Pointer;
+  StatProcess: PEnumServiceStatusProcessW;
+  I: Integer;
+  ServiceName, DisplayName, StateStr: string;
+  Pid, CurState, SvcType: Cardinal;
+begin
+  Result := TServiceList.Create(True);
+  HSCM := OpenSCManagerW(nil, nil, SC_MANAGER_ENUMERATE_SERVICE);
+  if HSCM = 0 then Exit;
+
+  try
+    BytesNeeded := 0;
+    ServicesReturned := 0;
+    ResumeHandle := 0;
+
+    EnumServicesStatusExW(
+      HSCM,
+      SC_ENUM_PROCESS_INFO,
+      SERVICE_WIN32,
+      SERVICE_STATE_ALL,
+      nil,
+      0,
+      BytesNeeded,
+      ServicesReturned,
+      ResumeHandle,
+      nil
+    );
+
+    if BytesNeeded > 0 then
+    begin
+      GetMem(Buffer, BytesNeeded);
+      try
+        ResumeHandle := 0;
+        if EnumServicesStatusExW(
+          HSCM,
+          SC_ENUM_PROCESS_INFO,
+          SERVICE_WIN32,
+          SERVICE_STATE_ALL,
+          Buffer,
+          BytesNeeded,
+          BytesNeeded,
+          ServicesReturned,
+          ResumeHandle,
+          nil
+        ) then
+        begin
+          for I := 0 to Integer(ServicesReturned) - 1 do
+          begin
+            StatProcess := PEnumServiceStatusProcessW(PByte(Buffer) + I * SizeOf(TEnumServiceStatusProcessW));
+            ServiceName := WideCharToString(StatProcess^.lpServiceName);
+            DisplayName := WideCharToString(StatProcess^.lpDisplayName);
+            Pid := StatProcess^.ServiceStatusProcess.dwProcessId;
+            CurState := StatProcess^.ServiceStatusProcess.dwCurrentState;
+            SvcType := StatProcess^.ServiceStatusProcess.dwServiceType;
+
+            case CurState of
+              SERVICE_STOPPED: StateStr := 'Stopped';
+              SERVICE_START_PENDING: StateStr := 'Starting';
+              SERVICE_STOP_PENDING: StateStr := 'Stopping';
+              SERVICE_RUNNING: StateStr := 'Running';
+              SERVICE_CONTINUE_PENDING: StateStr := 'Resuming';
+              SERVICE_PAUSE_PENDING: StateStr := 'Pausing';
+              SERVICE_PAUSED: StateStr := 'Paused';
+            else
+              StateStr := 'Unknown';
+            end;
+
+            Result.Add(TServiceItem.Create(
+              ServiceName, DisplayName, Pid, CurState, SvcType, StateStr
+            ));
+          end;
+        end;
+      finally
+        FreeMem(Buffer);
+      end;
+    end;
+
+  finally
+    CloseServiceHandle(HSCM);
+  end;
+end;
+{$ELSE}
+begin
+  Result := TServiceList.Create(True);
+  Result.Add(TServiceItem.Create('WinDefend', 'Microsoft Defender Antivirus Service', 2140, 4, $20, 'Running'));
+  Result.Add(TServiceItem.Create('wuauserv', 'Windows Update', 3110, 4, $20, 'Running'));
+  Result.Add(TServiceItem.Create('Spooler', 'Print Spooler', 0, 1, $10, 'Stopped'));
+end;
+{$ENDIF}
 
 end.

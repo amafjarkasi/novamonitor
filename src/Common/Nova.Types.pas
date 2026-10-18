@@ -25,7 +25,7 @@ type
   /// <summary>
   /// Active content view in the main form
   /// </summary>
-  TAppView = (avDashboard, avInspector);
+  TAppView = (avDashboard, avInspector, avNetwork, avServices);
 
   /// <summary>
   /// Quick filter modes for process list view
@@ -77,28 +77,96 @@ type
   TProcessItem = class
   private
     FId: Cardinal;
+    FParentId: Cardinal;
     FName: string;
     FMemoryWorkingSetMB: Single;
     FCpuSharePercent: Single;
     FStatus: TItemStatus;
     FThreadCount: Integer;
     FDescription: string;
+    FImagePath: string;
+    FUserName: string;
+    FArchitecture: string;
+    FTreeLevel: Integer;
   public
     constructor Create(const AId: Cardinal; const AName: string;
       const AMemoryMB: Single; const ACpuShare: Single;
       const AStatus: TItemStatus; const AThreads: Integer;
-      const ADesc: string = '');
+      const ADesc: string = ''; const AParentId: Cardinal = 0;
+      const APath: string = ''; const AUser: string = '';
+      const AArch: string = 'x64');
 
     property Id: Cardinal read FId write FId;
+    property ParentId: Cardinal read FParentId write FParentId;
     property Name: string read FName write FName;
     property MemoryWorkingSetMB: Single read FMemoryWorkingSetMB write FMemoryWorkingSetMB;
     property CpuSharePercent: Single read FCpuSharePercent write FCpuSharePercent;
     property Status: TItemStatus read FStatus write FStatus;
     property ThreadCount: Integer read FThreadCount write FThreadCount;
     property Description: string read FDescription write FDescription;
+    property ImagePath: string read FImagePath write FImagePath;
+    property UserName: string read FUserName write FUserName;
+    property Architecture: string read FArchitecture write FArchitecture;
+    property TreeLevel: Integer read FTreeLevel write FTreeLevel;
   end;
 
   TProcessList = TObjectList<TProcessItem>;
+
+  /// <summary>
+  /// Active network socket connection mapped to process
+  /// </summary>
+  TNetworkConnectionItem = class
+  private
+    FProcessId: Cardinal;
+    FProcessName: string;
+    FProtocol: string;
+    FLocalAddress: string;
+    FLocalPort: Word;
+    FRemoteAddress: string;
+    FRemotePort: Word;
+    FState: string;
+  public
+    constructor Create(const APid: Cardinal; const AProcName, AProto,
+      ALocalAddr: string; const ALocalPort: Word;
+      const ARemoteAddr: string; const ARemotePort: Word;
+      const AState: string);
+
+    property ProcessId: Cardinal read FProcessId write FProcessId;
+    property ProcessName: string read FProcessName write FProcessName;
+    property Protocol: string read FProtocol write FProtocol;
+    property LocalAddress: string read FLocalAddress write FLocalAddress;
+    property LocalPort: Word read FLocalPort write FLocalPort;
+    property RemoteAddress: string read FRemoteAddress write FRemoteAddress;
+    property RemotePort: Word read FRemotePort write FRemotePort;
+    property State: string read FState write FState;
+  end;
+
+  TNetworkConnectionList = TObjectList<TNetworkConnectionItem>;
+
+  /// <summary>
+  /// Windows system service representation
+  /// </summary>
+  TServiceItem = class
+  private
+    FServiceName: string;
+    FDisplayName: string;
+    FProcessId: Cardinal;
+    FCurrentState: Cardinal;
+    FStateString: string;
+    FServiceType: Cardinal;
+  public
+    constructor Create(const AName, ADisplay: string;
+      const APid, AState, AType: Cardinal; const AStateStr: string);
+
+    property ServiceName: string read FServiceName write FServiceName;
+    property DisplayName: string read FDisplayName write FDisplayName;
+    property ProcessId: Cardinal read FProcessId write FProcessId;
+    property CurrentState: Cardinal read FCurrentState write FCurrentState;
+    property StateString: string read FStateString write FStateString;
+    property ServiceType: Cardinal read FServiceType write FServiceType;
+  end;
+
+  TServiceList = TObjectList<TServiceItem>;
 
   /// <summary>
   /// Method callback event signatures for decoupled view-model communication
@@ -106,6 +174,8 @@ type
   /// </summary>
   TMetricsUpdateEvent = procedure(const AMetrics: TSystemMetrics) of object;
   TProcessListUpdateEvent = procedure(const AProcesses: TProcessList) of object;
+  TNetworkListUpdateEvent = procedure(const AConnections: TNetworkConnectionList) of object;
+  TServiceListUpdateEvent = procedure(const AServices: TServiceList) of object;
   TStatusMessageEvent = procedure(const AMessage: string; const AIsError: Boolean) of object;
   TThemeChangedEvent = procedure(const ATheme: TAppTheme) of object;
 
@@ -121,6 +191,8 @@ type
     function IsMonitoring: Boolean;
     function CollectSnapshot: TSystemMetrics;
     function CollectProcesses: TProcessList;
+    function CollectNetworkConnections: TNetworkConnectionList;
+    function CollectServices: TServiceList;
     function TerminateProcessById(const AProcessId: Cardinal): Boolean;
   end;
 
@@ -186,7 +258,9 @@ end;
 constructor TProcessItem.Create(const AId: Cardinal; const AName: string;
   const AMemoryMB: Single; const ACpuShare: Single;
   const AStatus: TItemStatus; const AThreads: Integer;
-  const ADesc: string);
+  const ADesc: string; const AParentId: Cardinal;
+  const APath: string; const AUser: string;
+  const AArch: string);
 begin
   inherited Create;
   FId := AId;
@@ -196,6 +270,43 @@ begin
   FStatus := AStatus;
   FThreadCount := AThreads;
   FDescription := ADesc;
+  FParentId := AParentId;
+  FImagePath := APath;
+  FUserName := AUser;
+  FArchitecture := AArch;
+  FTreeLevel := 0;
+end;
+
+{ TNetworkConnectionItem }
+
+constructor TNetworkConnectionItem.Create(const APid: Cardinal;
+  const AProcName, AProto, ALocalAddr: string; const ALocalPort: Word;
+  const ARemoteAddr: string; const ARemotePort: Word;
+  const AState: string);
+begin
+  inherited Create;
+  FProcessId := APid;
+  FProcessName := AProcName;
+  FProtocol := AProto;
+  FLocalAddress := ALocalAddr;
+  FLocalPort := ALocalPort;
+  FRemoteAddress := ARemoteAddr;
+  FRemotePort := ARemotePort;
+  FState := AState;
+end;
+
+{ TServiceItem }
+
+constructor TServiceItem.Create(const AName, ADisplay: string;
+  const APid, AState, AType: Cardinal; const AStateStr: string);
+begin
+  inherited Create;
+  FServiceName := AName;
+  FDisplayName := ADisplay;
+  FProcessId := APid;
+  FCurrentState := AState;
+  FServiceType := AType;
+  FStateString := AStateStr;
 end;
 
 end.

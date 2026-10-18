@@ -32,9 +32,22 @@ type
     FCpuHistory: THistoryBuffer;
     FRamHistory: THistoryBuffer;
     FFilterMode: TProcessFilterMode;
+    FTreeViewEnabled: Boolean;
+    FActiveView: TAppView;
+
+    FNetworkConnections: TNetworkConnectionList;
+    FFilteredNetwork: TNetworkConnectionList;
+    FNetworkSearchFilter: string;
+
+    FServices: TServiceList;
+    FFilteredServices: TServiceList;
+    FServiceSearchFilter: string;
+    FServiceStatusFilter: Integer;
 
     FOnMetricsUpdated: TMetricsUpdateEvent;
     FOnProcessesUpdated: TProcessListUpdateEvent;
+    FOnNetworkUpdated: TNetworkListUpdateEvent;
+    FOnServicesUpdated: TServiceListUpdateEvent;
     FOnStatusMessage: TStatusMessageEvent;
     FOnThemeChanged: TThemeChangedEvent;
 
@@ -44,6 +57,7 @@ type
 
     procedure HandleMetricsUpdate(const AMetrics: TSystemMetrics);
     procedure HandleProcessesUpdate(const AProcesses: TProcessList);
+    procedure BuildTree(const ASource, ATarget: TProcessList);
     procedure ApplyFilter;
     function CompareItems(const A, B: TProcessItem): Integer;
     procedure SortFiltered;
@@ -57,17 +71,30 @@ type
     procedure Initialize;
     procedure ToggleMonitoring;
     procedure ToggleTheme;
+    procedure ToggleTreeView;
+    procedure SetActiveView(const AView: TAppView);
     procedure SetSearchFilter(const AFilter: string);
     procedure SetFilterMode(const AMode: TProcessFilterMode);
     procedure SetSort(const AColumn: Integer);
     function KillProcess(const AProcessId: Cardinal): Boolean;
     function ExportReport(const AFilePath: string): Boolean;
 
+    procedure RefreshNetworkConnections;
+    procedure SetNetworkSearchFilter(const AFilter: string);
+
+    procedure RefreshServices;
+    procedure SetServiceSearchFilter(const AFilter: string);
+    procedure SetServiceStatusFilter(const AFilter: Integer);
+
     property LatestMetrics: TSystemMetrics read FLatestMetrics;
     property FilteredProcesses: TProcessList read FFilteredProcesses;
+    property NetworkConnections: TNetworkConnectionList read FFilteredNetwork;
+    property Services: TServiceList read FFilteredServices;
     property CurrentTheme: TAppTheme read FCurrentTheme;
     property ThemeColors: TThemeColors read FThemeColors;
     property IsMonitoring: Boolean read GetIsMonitoring;
+    property IsTreeView: Boolean read FTreeViewEnabled;
+    property ActiveView: TAppView read FActiveView;
     property SortColumn: Integer read FSortColumn;
     property SortAscending: Boolean read FSortAscending;
     property FilterMode: TProcessFilterMode read FFilterMode;
@@ -76,6 +103,8 @@ type
 
     property OnMetricsUpdated: TMetricsUpdateEvent read FOnMetricsUpdated write FOnMetricsUpdated;
     property OnProcessesUpdated: TProcessListUpdateEvent read FOnProcessesUpdated write FOnProcessesUpdated;
+    property OnNetworkUpdated: TNetworkListUpdateEvent read FOnNetworkUpdated write FOnNetworkUpdated;
+    property OnServicesUpdated: TServiceListUpdateEvent read FOnServicesUpdated write FOnServicesUpdated;
     property OnStatusMessage: TStatusMessageEvent read FOnStatusMessage write FOnStatusMessage;
     property OnThemeChanged: TThemeChangedEvent read FOnThemeChanged write FOnThemeChanged;
   end;
@@ -100,8 +129,17 @@ begin
 
   FProcesses := TProcessList.Create(True);
   FFilteredProcesses := TProcessList.Create(False); // Borrowed references
+  FNetworkConnections := TNetworkConnectionList.Create(True);
+  FFilteredNetwork := TNetworkConnectionList.Create(False);
+  FServices := TServiceList.Create(True);
+  FFilteredServices := TServiceList.Create(False);
   FSearchFilter := '';
+  FNetworkSearchFilter := '';
+  FServiceSearchFilter := '';
+  FServiceStatusFilter := 0;
   FFilterMode := fmAll;
+  FTreeViewEnabled := False;
+  FActiveView := avDashboard;
   FCpuHistory.Clear;
   FRamHistory.Clear;
   FCurrentTheme := atDark;
@@ -115,6 +153,10 @@ destructor TMainViewModel.Destroy;
 begin
   if Assigned(FMetricsService) then
     FMetricsService.StopMonitoring;
+  FFilteredServices.Free;
+  FServices.Free;
+  FFilteredNetwork.Free;
+  FNetworkConnections.Free;
   FFilteredProcesses.Free;
   FProcesses.Free;
   inherited Destroy;
@@ -137,6 +179,9 @@ begin
   FProcesses.Free;
   FProcesses := FMetricsService.CollectProcesses;
   ApplyFilter;
+
+  RefreshNetworkConnections;
+  RefreshServices;
 
   // Start continuous async background polling at 1500ms intervals
   FMetricsService.StartMonitoring(
@@ -182,6 +227,26 @@ begin
     FOnThemeChanged(FCurrentTheme);
 end;
 
+procedure TMainViewModel.ToggleTreeView;
+begin
+  FTreeViewEnabled := not FTreeViewEnabled;
+  ApplyFilter;
+  if Assigned(FOnProcessesUpdated) then
+    FOnProcessesUpdated(FFilteredProcesses);
+end;
+
+procedure TMainViewModel.SetActiveView(const AView: TAppView);
+begin
+  if FActiveView <> AView then
+  begin
+    FActiveView := AView;
+    case FActiveView of
+      avNetwork: RefreshNetworkConnections;
+      avServices: RefreshServices;
+    end;
+  end;
+end;
+
 procedure TMainViewModel.SetSearchFilter(const AFilter: string);
 begin
   FSearchFilter := LowerCase(Trim(AFilter));
@@ -216,38 +281,142 @@ begin
     FOnProcessesUpdated(FFilteredProcesses);
 end;
 
+procedure TMainViewModel.BuildTree(const ASource, ATarget: TProcessList);
+var
+  PidMap: TDictionary<Cardinal, TProcessItem>;
+  ChildrenMap: TDictionary<Cardinal, TList<TProcessItem>>;
+  Roots: TList<TProcessItem>;
+  I: Integer;
+  Item: TProcessItem;
+  ChildList: TList<TProcessItem>;
+
+  procedure AddBranch(ANode: TProcessItem; ALevel: Integer);
+  var
+    K: Integer;
+    Children: TList<TProcessItem>;
+  begin
+    ANode.TreeLevel := ALevel;
+    ATarget.Add(ANode);
+    if (ALevel < 32) and ChildrenMap.TryGetValue(ANode.Id, Children) then
+    begin
+      for K := 0 to Children.Count - 1 do
+        AddBranch(Children[K], ALevel + 1);
+    end;
+  end;
+
+begin
+  PidMap := TDictionary<Cardinal, TProcessItem>.Create;
+  ChildrenMap := TDictionary<Cardinal, TList<TProcessItem>>.Create;
+  Roots := TList<TProcessItem>.Create;
+  try
+    for I := 0 to ASource.Count - 1 do
+    begin
+      Item := ASource[I];
+      PidMap.AddOrSetValue(Item.Id, Item);
+      if not ChildrenMap.TryGetValue(Item.ParentId, ChildList) then
+      begin
+        ChildList := TList<TProcessItem>.Create;
+        ChildrenMap.Add(Item.ParentId, ChildList);
+      end;
+      ChildList.Add(Item);
+    end;
+
+    for I := 0 to ASource.Count - 1 do
+    begin
+      Item := ASource[I];
+      if (Item.ParentId = 0) or (Item.ParentId = Item.Id) or (not PidMap.ContainsKey(Item.ParentId)) then
+        Roots.Add(Item);
+    end;
+
+    for I := 0 to Roots.Count - 1 do
+      AddBranch(Roots[I], 0);
+  finally
+    for ChildList in ChildrenMap.Values do
+      ChildList.Free;
+    ChildrenMap.Free;
+    Roots.Free;
+    PidMap.Free;
+  end;
+end;
+
 procedure TMainViewModel.ApplyFilter;
 var
   I: Integer;
   Item: TProcessItem;
+  SourceList: TProcessList;
 begin
   FFilteredProcesses.Clear;
-  for I := 0 to FProcesses.Count - 1 do
+
+  if FTreeViewEnabled then
   begin
-    Item := FProcesses[I];
+    SourceList := TProcessList.Create(False);
+    try
+      BuildTree(FProcesses, SourceList);
+      for I := 0 to SourceList.Count - 1 do
+      begin
+        Item := SourceList[I];
 
-    // Resource consumer filter mode
-    case FFilterMode of
-      fmHeavyMemory:
-        if Item.MemoryWorkingSetMB < 400.0 then
-          Continue;
-      fmActiveCpu:
-        if Item.CpuSharePercent < 2.0 then
-          Continue;
-      fmCriticalOnly:
-        if not (Item.Status in [isCritical, isWarning]) then
-          Continue;
+        // Resource consumer filter mode
+        case FFilterMode of
+          fmHeavyMemory:
+            if Item.MemoryWorkingSetMB < 400.0 then
+              Continue;
+          fmActiveCpu:
+            if Item.CpuSharePercent < 2.0 then
+              Continue;
+          fmCriticalOnly:
+            if not (Item.Status in [isCritical, isWarning]) then
+              Continue;
+        end;
+
+        // Extended multi-field search filter (PID, Name, User, Path, Arch)
+        if (FSearchFilter = '') or
+           (Pos(FSearchFilter, LowerCase(Item.Name)) > 0) or
+           (Pos(FSearchFilter, IntToStr(Item.Id)) > 0) or
+           (Pos(FSearchFilter, LowerCase(Item.UserName)) > 0) or
+           (Pos(FSearchFilter, LowerCase(Item.ImagePath)) > 0) or
+           (Pos(FSearchFilter, LowerCase(Item.Architecture)) > 0) then
+        begin
+          FFilteredProcesses.Add(Item);
+        end;
+      end;
+    finally
+      SourceList.Free;
     end;
-
-    // Search query filter
-    if (FSearchFilter = '') or
-       (Pos(FSearchFilter, LowerCase(Item.Name)) > 0) or
-       (Pos(FSearchFilter, IntToStr(Item.Id)) > 0) then
+  end
+  else
+  begin
+    for I := 0 to FProcesses.Count - 1 do
     begin
-      FFilteredProcesses.Add(Item);
+      Item := FProcesses[I];
+      Item.TreeLevel := 0;
+
+      // Resource consumer filter mode
+      case FFilterMode of
+        fmHeavyMemory:
+          if Item.MemoryWorkingSetMB < 400.0 then
+            Continue;
+        fmActiveCpu:
+          if Item.CpuSharePercent < 2.0 then
+            Continue;
+        fmCriticalOnly:
+          if not (Item.Status in [isCritical, isWarning]) then
+            Continue;
+      end;
+
+      // Extended multi-field search filter (PID, Name, User, Path, Arch)
+      if (FSearchFilter = '') or
+         (Pos(FSearchFilter, LowerCase(Item.Name)) > 0) or
+         (Pos(FSearchFilter, IntToStr(Item.Id)) > 0) or
+         (Pos(FSearchFilter, LowerCase(Item.UserName)) > 0) or
+         (Pos(FSearchFilter, LowerCase(Item.ImagePath)) > 0) or
+         (Pos(FSearchFilter, LowerCase(Item.Architecture)) > 0) then
+      begin
+        FFilteredProcesses.Add(Item);
+      end;
     end;
+    SortFiltered;
   end;
-  SortFiltered;
 end;
 
 function TMainViewModel.CompareItems(const A, B: TProcessItem): Integer;
@@ -406,6 +575,88 @@ begin
         FOnStatusMessage(Format('Export failed: %s', [E.Message]), True);
     end;
   end;
+end;
+
+procedure TMainViewModel.RefreshNetworkConnections;
+begin
+  FNetworkConnections.Free;
+  FNetworkConnections := FMetricsService.CollectNetworkConnections;
+  SetNetworkSearchFilter(FNetworkSearchFilter);
+end;
+
+procedure TMainViewModel.SetNetworkSearchFilter(const AFilter: string);
+var
+  I: Integer;
+  Item: TNetworkConnectionItem;
+  S: string;
+begin
+  FNetworkSearchFilter := LowerCase(Trim(AFilter));
+  FFilteredNetwork.Clear;
+  for I := 0 to FNetworkConnections.Count - 1 do
+  begin
+    Item := FNetworkConnections[I];
+    if (FNetworkSearchFilter = '') then
+      FFilteredNetwork.Add(Item)
+    else
+    begin
+      S := Format('%d %s %s %s %s %s', [Item.ProcessId, LowerCase(Item.ProcessName),
+        LowerCase(Item.Protocol), LowerCase(Item.LocalAddress),
+        LowerCase(Item.RemoteAddress), LowerCase(Item.State)]);
+      if Pos(FNetworkSearchFilter, S) > 0 then
+        FFilteredNetwork.Add(Item);
+    end;
+  end;
+  if Assigned(FOnNetworkUpdated) then
+    FOnNetworkUpdated(FFilteredNetwork);
+end;
+
+procedure TMainViewModel.RefreshServices;
+begin
+  FServices.Free;
+  FServices := FMetricsService.CollectServices;
+  SetServiceSearchFilter(FServiceSearchFilter);
+end;
+
+procedure TMainViewModel.SetServiceStatusFilter(const AFilter: Integer);
+begin
+  FServiceStatusFilter := AFilter;
+  SetServiceSearchFilter(FServiceSearchFilter);
+end;
+
+procedure TMainViewModel.SetServiceSearchFilter(const AFilter: string);
+var
+  I: Integer;
+  Item: TServiceItem;
+  MatchesStatus: Boolean;
+  S: string;
+begin
+  FServiceSearchFilter := LowerCase(Trim(AFilter));
+  FFilteredServices.Clear;
+  for I := 0 to FServices.Count - 1 do
+  begin
+    Item := FServices[I];
+    case FServiceStatusFilter of
+      1: MatchesStatus := SameText(Item.StateString, 'Running');
+      2: MatchesStatus := SameText(Item.StateString, 'Stopped');
+    else
+      MatchesStatus := True;
+    end;
+
+    if not MatchesStatus then
+      Continue;
+
+    if (FServiceSearchFilter = '') then
+      FFilteredServices.Add(Item)
+    else
+    begin
+      S := Format('%s %s %s %d', [LowerCase(Item.ServiceName),
+        LowerCase(Item.DisplayName), LowerCase(Item.StateString), Item.ProcessId]);
+      if Pos(FServiceSearchFilter, S) > 0 then
+        FFilteredServices.Add(Item);
+    end;
+  end;
+  if Assigned(FOnServicesUpdated) then
+    FOnServicesUpdated(FFilteredServices);
 end;
 
 end.
