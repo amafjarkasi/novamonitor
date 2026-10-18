@@ -31,12 +31,6 @@
       <stop offset="100%" stop-color="#6366f1"/>
     </linearGradient>
 
-    <linearGradient id="accentLine" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.9"/>
-      <stop offset="50%" stop-color="#818cf8" stop-opacity="0.6"/>
-      <stop offset="100%" stop-color="#34d399" stop-opacity="0"/>
-    </linearGradient>
-
     <linearGradient id="textGrad" x1="0%" y1="0%" x2="100%" y2="0%">
       <stop offset="0%" stop-color="#ffffff"/>
       <stop offset="100%" stop-color="#cbd5e1"/>
@@ -91,17 +85,14 @@
       <tspan dx="12" font-size="56" font-weight="300" letter-spacing="6" fill="#38bdf8">MONITOR</tspan>
     </text>
 
-    <!-- Hairline Accent Divider with Gradient -->
-    <rect x="2" y="74" width="550" height="1.5" fill="url(#accentLine)"/>
-
     <!-- Subtitle / Meta Hierarchy -->
-    <text x="3" y="102" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif"
+    <text x="3" y="92" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif"
           font-size="12" font-weight="600" letter-spacing="4" fill="#94a3b8">
       SYSTEM TELEMETRY ENGINE <tspan fill="#38bdf8">•</tspan> DELPHI &amp; FREE PASCAL
     </text>
 
     <!-- Spec Pill Tags (Clean Minimalist Chips) -->
-    <g transform="translate(3, 122)">
+    <g transform="translate(3, 118)">
       <!-- Pill 1: MVVM -->
       <rect x="0" y="0" width="76" height="22" rx="11" fill="#111827" stroke="#1f293d" stroke-width="1"/>
       <text x="38" y="15" font-family="'Segoe UI', sans-serif" font-size="10.5" font-weight="700" fill="#94a3b8" text-anchor="middle" letter-spacing="1">MVVM</text>
