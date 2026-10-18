@@ -74,6 +74,7 @@ type
     function IsMonitoring: Boolean;
     function CollectSnapshot: TSystemMetrics;
     function CollectProcesses: TProcessList;
+    function TerminateProcessById(const AProcessId: Cardinal): Boolean;
   end;
 
 implementation
@@ -490,6 +491,26 @@ end;
 function TMetricsService.IsMonitoring: Boolean;
 begin
   Result := Assigned(FWorker);
+end;
+
+function TMetricsService.TerminateProcessById(const AProcessId: Cardinal): Boolean;
+var
+  HProc: THandle;
+begin
+  Result := False;
+  // Guard system critical processes (PID 0 = Idle, PID 4 = System) and current process
+  if (AProcessId <= 4) or (AProcessId = GetCurrentProcessId) then
+    Exit;
+
+  HProc := OpenProcess(PROCESS_TERMINATE, False, AProcessId);
+  if HProc <> 0 then
+  begin
+    try
+      Result := Windows.TerminateProcess(HProc, 1);
+    finally
+      CloseHandle(HProc);
+    end;
+  end;
 end;
 
 end.

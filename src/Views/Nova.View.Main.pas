@@ -110,8 +110,27 @@ type
     FActiveView: TAppView;
     FContextMenu: TPopupMenu;
 
+    btnPinWindow: TButton;
+    btnFilterAll: TButton;
+    btnFilterMem: TButton;
+    btnFilterCpu: TButton;
+    btnFilterCrit: TButton;
+    btnEndTask: TButton;
+
     function GetSelectedProcess: TProcessItem;
     procedure SetupContextMenu;
+    procedure SetupTableToolbarActions;
+    procedure UpdateFilterChipStyles;
+    procedure TerminateSelectedProcess;
+
+    procedure btnPinWindowClick(Sender: TObject);
+    procedure btnFilterAllClick(Sender: TObject);
+    procedure btnFilterMemClick(Sender: TObject);
+    procedure btnFilterCpuClick(Sender: TObject);
+    procedure btnFilterCritClick(Sender: TObject);
+    procedure btnEndTaskClick(Sender: TObject);
+    procedure mnuEndTaskClick(Sender: TObject);
+
     procedure mnuCopyNameClick(Sender: TObject);
     procedure mnuCopyPidClick(Sender: TObject);
     procedure mnuCopyDetailsClick(Sender: TObject);
@@ -138,7 +157,8 @@ type
     {$ENDIF}
     procedure DrawMetricCard(const APaintBox: TPaintBox; const ATitle: string;
       const APrimaryVal: string; const ASecondaryVal: string;
-      const APercent: Single; const ABarColor: TColor);
+      const APercent: Single; const ABarColor: TColor;
+      const AHistory: TSingleDynArray = nil);
   public
     { Public declarations }
   end;
@@ -203,7 +223,21 @@ begin
   lvProcesses.OwnerData := True;
   lvProcesses.OnData := lvProcessesData;
 
+  // Configure Header Pin Window (Always on Top) toggle button
+  pnlHeaderActions.Width := 520;
+  btnPinWindow := TButton.Create(Self);
+  btnPinWindow.Parent := pnlHeaderActions;
+  btnPinWindow.SetBounds(222, 18, 54, 28);
+  btnPinWindow.Caption := 'Pin';
+  btnPinWindow.Hint := 'Toggle Always on Top (Ctrl+P)';
+  btnPinWindow.ShowHint := True;
+  btnPinWindow.OnClick := btnPinWindowClick;
+
+  btnToggleMonitor.Left := 282;
+  btnExportSnapshot.Left := 386;
+
   SetupContextMenu;
+  SetupTableToolbarActions;
 
   // Minimize-to-tray: the checkbox gates the behavior chosen at minimize time
   FTrayIcon := TTrayIcon.Create(Self);
@@ -216,6 +250,182 @@ begin
   FColors := FViewModel.ThemeColors;
   ApplyTheme(FColors);
   UpdateSortIndicators;
+  UpdateFilterChipStyles;
+end;
+
+procedure TMainForm.SetupTableToolbarActions;
+begin
+  btnFilterAll := TButton.Create(Self);
+  btnFilterAll.Parent := pnlTableToolbar;
+  btnFilterAll.SetBounds(210, 7, 46, 26);
+  btnFilterAll.Caption := '[All]';
+  btnFilterAll.Hint := 'Show all active processes (Ctrl+1)';
+  btnFilterAll.ShowHint := True;
+  btnFilterAll.OnClick := btnFilterAllClick;
+
+  btnFilterMem := TButton.Create(Self);
+  btnFilterMem.Parent := pnlTableToolbar;
+  btnFilterMem.SetBounds(260, 7, 142, 26);
+  btnFilterMem.Caption := 'Heavy RAM (>400MB)';
+  btnFilterMem.Hint := 'Filter processes consuming >400MB RAM (Ctrl+2)';
+  btnFilterMem.ShowHint := True;
+  btnFilterMem.OnClick := btnFilterMemClick;
+
+  btnFilterCpu := TButton.Create(Self);
+  btnFilterCpu.Parent := pnlTableToolbar;
+  btnFilterCpu.SetBounds(406, 7, 116, 26);
+  btnFilterCpu.Caption := 'Active CPU (>2%)';
+  btnFilterCpu.Hint := 'Filter processes actively using >2% CPU (Ctrl+3)';
+  btnFilterCpu.ShowHint := True;
+  btnFilterCpu.OnClick := btnFilterCpuClick;
+
+  btnFilterCrit := TButton.Create(Self);
+  btnFilterCrit.Parent := pnlTableToolbar;
+  btnFilterCrit.SetBounds(526, 7, 65, 26);
+  btnFilterCrit.Caption := 'Alerts';
+  btnFilterCrit.Hint := 'Filter processes in Warning or Critical state (Ctrl+4)';
+  btnFilterCrit.ShowHint := True;
+  btnFilterCrit.OnClick := btnFilterCritClick;
+
+  btnEndTask := TButton.Create(Self);
+  btnEndTask.Parent := pnlTableToolbar;
+  btnEndTask.SetBounds(595, 7, 85, 26);
+  btnEndTask.Caption := 'End Task';
+  btnEndTask.Hint := 'Terminate selected process (Del)';
+  btnEndTask.ShowHint := True;
+  btnEndTask.OnClick := btnEndTaskClick;
+end;
+
+procedure TMainForm.UpdateFilterChipStyles;
+begin
+  if not Assigned(btnFilterAll) then Exit;
+  case FViewModel.FilterMode of
+    fmAll:
+      begin
+        btnFilterAll.Caption := '[All]';
+        btnFilterMem.Caption := 'Heavy RAM (>400MB)';
+        btnFilterCpu.Caption := 'Active CPU (>2%)';
+        btnFilterCrit.Caption := 'Alerts';
+      end;
+    fmHeavyMemory:
+      begin
+        btnFilterAll.Caption := 'All';
+        btnFilterMem.Caption := '[Heavy RAM (>400MB)]';
+        btnFilterCpu.Caption := 'Active CPU (>2%)';
+        btnFilterCrit.Caption := 'Alerts';
+      end;
+    fmActiveCpu:
+      begin
+        btnFilterAll.Caption := 'All';
+        btnFilterMem.Caption := 'Heavy RAM (>400MB)';
+        btnFilterCpu.Caption := '[Active CPU (>2%)]';
+        btnFilterCrit.Caption := 'Alerts';
+      end;
+    fmCriticalOnly:
+      begin
+        btnFilterAll.Caption := 'All';
+        btnFilterMem.Caption := 'Heavy RAM (>400MB)';
+        btnFilterCpu.Caption := 'Active CPU (>2%)';
+        btnFilterCrit.Caption := '[Alerts]';
+      end;
+  end;
+end;
+
+procedure TMainForm.btnFilterAllClick(Sender: TObject);
+begin
+  FViewModel.SetFilterMode(fmAll);
+  UpdateFilterChipStyles;
+  lblFooterStatus.Caption := 'Showing all active processes';
+  lblFooterStatus.Font.Color := FColors.TextSecondary;
+end;
+
+procedure TMainForm.btnFilterMemClick(Sender: TObject);
+begin
+  FViewModel.SetFilterMode(fmHeavyMemory);
+  UpdateFilterChipStyles;
+  lblFooterStatus.Caption := 'Filtered: Heavy Memory Working Set (>400 MB)';
+  lblFooterStatus.Font.Color := FColors.Accent;
+end;
+
+procedure TMainForm.btnFilterCpuClick(Sender: TObject);
+begin
+  FViewModel.SetFilterMode(fmActiveCpu);
+  UpdateFilterChipStyles;
+  lblFooterStatus.Caption := 'Filtered: Active CPU Consumption (>2%)';
+  lblFooterStatus.Font.Color := FColors.Accent;
+end;
+
+procedure TMainForm.btnFilterCritClick(Sender: TObject);
+begin
+  FViewModel.SetFilterMode(fmCriticalOnly);
+  UpdateFilterChipStyles;
+  lblFooterStatus.Caption := 'Filtered: Warning and Critical Health State';
+  lblFooterStatus.Font.Color := FColors.Warning;
+end;
+
+procedure TMainForm.btnEndTaskClick(Sender: TObject);
+begin
+  TerminateSelectedProcess;
+end;
+
+procedure TMainForm.mnuEndTaskClick(Sender: TObject);
+begin
+  TerminateSelectedProcess;
+end;
+
+procedure TMainForm.btnPinWindowClick(Sender: TObject);
+begin
+  if FormStyle = fsStayOnTop then
+  begin
+    FormStyle := fsNormal;
+    btnPinWindow.Caption := 'Pin';
+    lblFooterStatus.Caption := 'Window unpinned (Normal mode)';
+  end
+  else
+  begin
+    FormStyle := fsStayOnTop;
+    btnPinWindow.Caption := 'Pinned';
+    lblFooterStatus.Caption := 'Window pinned (Always on Top)';
+  end;
+  lblFooterStatus.Font.Color := FColors.Accent;
+end;
+
+procedure TMainForm.TerminateSelectedProcess;
+var
+  Item: TProcessItem;
+begin
+  Item := GetSelectedProcess;
+  if Item = nil then
+  begin
+    lblFooterStatus.Caption := 'Select a process from the list first to end task';
+    lblFooterStatus.Font.Color := FColors.Warning;
+    Exit;
+  end;
+
+  if (Item.Id <= 4) or (Item.Id = GetCurrentProcessId) then
+  begin
+    MessageDlg('Protected Process',
+      Format('Process "%s" (PID: %d) is protected and cannot be terminated.',
+        [Item.Name, Item.Id]),
+      mtWarning, [mbOK], 0);
+    Exit;
+  end;
+
+  if MessageDlg('End Task Confirmation',
+    Format('Are you sure you want to terminate "%s" (PID: %d)?'#13#10#13#10 +
+           'Terminating an active task may cause unsaved application data to be lost.',
+           [Item.Name, Item.Id]),
+    mtConfirmation, [mbYes, mbNo], 0) = mrYes then
+  begin
+    if not FViewModel.KillProcess(Item.Id) then
+    begin
+      MessageDlg('Access Denied',
+        Format('Failed to terminate "%s" (PID: %d).'#13#10 +
+               'Administrative privileges may be required to end this process.',
+               [Item.Name, Item.Id]),
+        mtError, [mbOK], 0);
+    end;
+  end;
 end;
 
 procedure TMainForm.SetupContextMenu;
@@ -237,6 +447,15 @@ begin
   Item := TMenuItem.Create(FContextMenu);
   Item.Caption := 'Copy Details (CSV)';
   Item.OnClick := mnuCopyDetailsClick;
+  FContextMenu.Items.Add(Item);
+
+  Item := TMenuItem.Create(FContextMenu);
+  Item.Caption := '-';
+  FContextMenu.Items.Add(Item);
+
+  Item := TMenuItem.Create(FContextMenu);
+  Item.Caption := 'End Task' + #9 + 'Del';
+  Item.OnClick := mnuEndTaskClick;
   FContextMenu.Items.Add(Item);
 
   Item := TMenuItem.Create(FContextMenu);
@@ -306,7 +525,12 @@ end;
 
 procedure TMainForm.FormKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
 begin
-  if (ssCtrl in Shift) and (Key = Word('F')) then
+  if Key = VK_DELETE then
+  begin
+    TerminateSelectedProcess;
+    Key := 0;
+  end
+  else if (ssCtrl in Shift) and (Key = Word('F')) then
   begin
     edtSearch.SetFocus;
     edtSearch.SelectAll;
@@ -320,6 +544,31 @@ begin
   else if (ssCtrl in Shift) and (Key = Word('E')) then
   begin
     btnExportSnapshotClick(nil);
+    Key := 0;
+  end
+  else if (ssCtrl in Shift) and (Key = Word('P')) then
+  begin
+    btnPinWindowClick(nil);
+    Key := 0;
+  end
+  else if (ssCtrl in Shift) and (Key = Word('1')) then
+  begin
+    btnFilterAllClick(nil);
+    Key := 0;
+  end
+  else if (ssCtrl in Shift) and (Key = Word('2')) then
+  begin
+    btnFilterMemClick(nil);
+    Key := 0;
+  end
+  else if (ssCtrl in Shift) and (Key = Word('3')) then
+  begin
+    btnFilterCpuClick(nil);
+    Key := 0;
+  end
+  else if (ssCtrl in Shift) and (Key = Word('4')) then
+  begin
+    btnFilterCritClick(nil);
     Key := 0;
   end
   else if (Key = VK_ESCAPE) and edtSearch.Focused then
@@ -516,10 +765,11 @@ end;
 
 procedure TMainForm.DrawMetricCard(const APaintBox: TPaintBox; const ATitle: string;
   const APrimaryVal: string; const ASecondaryVal: string;
-  const APercent: Single; const ABarColor: TColor);
+  const APercent: Single; const ABarColor: TColor;
+  const AHistory: TSingleDynArray);
 var
   C: TCanvas;
-  R, BarR: TRect;
+  R, BarR, SparkR: TRect;
   Y: Integer;
 const
   PadX = 14;
@@ -552,6 +802,14 @@ begin
   C.Font.Style := [];
   C.Font.Color := FColors.TextSecondary;
   C.TextOut(R.Left + PadX, Y, ASecondaryVal);
+
+  // Render rolling sparkline in the upper-right quadrant if history exists
+  if Length(AHistory) >= 2 then
+  begin
+    SparkR := Rect(R.Right - 70, R.Top + 14, R.Right - 12, R.Bottom - 26);
+    TUIUtils.DrawSparkline(C, SparkR, AHistory, ABarColor,
+      TUIUtils.BlendColor(FColors.SurfaceCard, ABarColor, 0.22));
+  end;
 
   if APercent >= 0 then
   begin
@@ -606,8 +864,8 @@ begin
 
   DrawMetricCard(pbCardCpu, 'CPU UTILIZATION',
     TUIUtils.FormatPercent(M.CpuUsagePercent),
-    'Across logical processors',
-    M.CpuUsagePercent, BarColor);
+    'Across logical cores',
+    M.CpuUsagePercent, BarColor, FViewModel.CpuHistory.ToArray);
 end;
 
 procedure TMainForm.pbCardRamPaint(Sender: TObject);
@@ -618,7 +876,7 @@ begin
   DrawMetricCard(pbCardRam, 'MEMORY LOAD',
     Format('%d%% (%s)', [M.MemoryLoadPercent, TUIUtils.FormatMegabytes(M.UsedPhysicalMB)]),
     Format('%s free / %s total', [TUIUtils.FormatMegabytes(M.AvailablePhysicalMB), TUIUtils.FormatMegabytes(M.TotalPhysicalMB)]),
-    M.MemoryLoadPercent, FColors.Accent);
+    M.MemoryLoadPercent, FColors.Accent, FViewModel.RamHistory.ToArray);
 end;
 
 procedure TMainForm.pbCardDiskPaint(Sender: TObject);
@@ -629,7 +887,7 @@ begin
   DrawMetricCard(pbCardDisk, 'SYSTEM STORAGE',
     Format('%.1f%% Used', [M.DiskUsagePercent]),
     Format('%.1f GB Free of %.1f GB', [M.FreeDiskGB, M.TotalDiskGB]),
-    M.DiskUsagePercent, FColors.Success);
+    M.DiskUsagePercent, FColors.Success, nil);
 end;
 
 procedure TMainForm.pbCardUptimePaint(Sender: TObject);
@@ -640,7 +898,7 @@ begin
   DrawMetricCard(pbCardUptime, 'SYSTEM UPTIME',
     TUIUtils.FormatDuration(M.UptimeSeconds),
     Format('%d active processes', [M.ActiveProcessCount]),
-    -1, FColors.Accent);
+    -1, FColors.Accent, nil);
 end;
 
 procedure TMainForm.btnToggleMonitorClick(Sender: TObject);

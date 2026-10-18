@@ -29,6 +29,9 @@ type
     FSearchFilter: string;
     FCurrentTheme: TAppTheme;
     FThemeColors: TThemeColors;
+    FCpuHistory: THistoryBuffer;
+    FRamHistory: THistoryBuffer;
+    FFilterMode: TProcessFilterMode;
 
     FOnMetricsUpdated: TMetricsUpdateEvent;
     FOnProcessesUpdated: TProcessListUpdateEvent;
@@ -55,7 +58,9 @@ type
     procedure ToggleMonitoring;
     procedure ToggleTheme;
     procedure SetSearchFilter(const AFilter: string);
+    procedure SetFilterMode(const AMode: TProcessFilterMode);
     procedure SetSort(const AColumn: Integer);
+    function KillProcess(const AProcessId: Cardinal): Boolean;
     function ExportReport(const AFilePath: string): Boolean;
 
     property LatestMetrics: TSystemMetrics read FLatestMetrics;
@@ -65,6 +70,9 @@ type
     property IsMonitoring: Boolean read GetIsMonitoring;
     property SortColumn: Integer read FSortColumn;
     property SortAscending: Boolean read FSortAscending;
+    property FilterMode: TProcessFilterMode read FFilterMode;
+    property CpuHistory: THistoryBuffer read FCpuHistory;
+    property RamHistory: THistoryBuffer read FRamHistory;
 
     property OnMetricsUpdated: TMetricsUpdateEvent read FOnMetricsUpdated write FOnMetricsUpdated;
     property OnProcessesUpdated: TProcessListUpdateEvent read FOnProcessesUpdated write FOnProcessesUpdated;
@@ -93,6 +101,9 @@ begin
   FProcesses := TProcessList.Create(True);
   FFilteredProcesses := TProcessList.Create(False); // Borrowed references
   FSearchFilter := '';
+  FFilterMode := fmAll;
+  FCpuHistory.Clear;
+  FRamHistory.Clear;
   FCurrentTheme := atDark;
   FThemeColors := TUIUtils.GetThemeColors(FCurrentTheme);
   FLatestMetrics := TSystemMetrics.CreateEmpty;
@@ -120,6 +131,9 @@ end;
 procedure TMainViewModel.Initialize;
 begin
   FLatestMetrics := FMetricsService.CollectSnapshot;
+  FCpuHistory.Add(FLatestMetrics.CpuUsagePercent);
+  FRamHistory.Add(FLatestMetrics.MemoryLoadPercent);
+
   FProcesses.Free;
   FProcesses := FMetricsService.CollectProcesses;
   ApplyFilter;
@@ -176,6 +190,17 @@ begin
     FOnProcessesUpdated(FFilteredProcesses);
 end;
 
+procedure TMainViewModel.SetFilterMode(const AMode: TProcessFilterMode);
+begin
+  if FFilterMode <> AMode then
+  begin
+    FFilterMode := AMode;
+    ApplyFilter;
+    if Assigned(FOnProcessesUpdated) then
+      FOnProcessesUpdated(FFilteredProcesses);
+  end;
+end;
+
 procedure TMainViewModel.SetSort(const AColumn: Integer);
 begin
   if AColumn = FSortColumn then
@@ -200,6 +225,21 @@ begin
   for I := 0 to FProcesses.Count - 1 do
   begin
     Item := FProcesses[I];
+
+    // Resource consumer filter mode
+    case FFilterMode of
+      fmHeavyMemory:
+        if Item.MemoryWorkingSetMB < 400.0 then
+          Continue;
+      fmActiveCpu:
+        if Item.CpuSharePercent < 2.0 then
+          Continue;
+      fmCriticalOnly:
+        if not (Item.Status in [isCritical, isWarning]) then
+          Continue;
+    end;
+
+    // Search query filter
     if (FSearchFilter = '') or
        (Pos(FSearchFilter, LowerCase(Item.Name)) > 0) or
        (Pos(FSearchFilter, IntToStr(Item.Id)) > 0) then
@@ -295,6 +335,8 @@ end;
 procedure TMainViewModel.HandleMetricsUpdate(const AMetrics: TSystemMetrics);
 begin
   FLatestMetrics := AMetrics;
+  FCpuHistory.Add(AMetrics.CpuUsagePercent);
+  FRamHistory.Add(AMetrics.MemoryLoadPercent);
   if Assigned(FOnMetricsUpdated) then
     FOnMetricsUpdated(FLatestMetrics);
 end;
@@ -310,6 +352,36 @@ begin
 
   if Assigned(FOnProcessesUpdated) then
     FOnProcessesUpdated(FFilteredProcesses);
+end;
+
+function TMainViewModel.KillProcess(const AProcessId: Cardinal): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  if Assigned(FMetricsService) then
+  begin
+    Result := FMetricsService.TerminateProcessById(AProcessId);
+    if Result then
+    begin
+      for I := FProcesses.Count - 1 downto 0 do
+        if FProcesses[I].Id = AProcessId then
+        begin
+          FProcesses.Delete(I);
+          Break;
+        end;
+      ApplyFilter;
+      if Assigned(FOnProcessesUpdated) then
+        FOnProcessesUpdated(FFilteredProcesses);
+      if Assigned(FOnStatusMessage) then
+        FOnStatusMessage(Format('Process %d terminated.', [AProcessId]), False);
+    end
+    else
+    begin
+      if Assigned(FOnStatusMessage) then
+        FOnStatusMessage(Format('Failed to terminate process %d (Access Denied or System Protected).', [AProcessId]), True);
+    end;
+  end;
 end;
 
 function TMainViewModel.ExportReport(const AFilePath: string): Boolean;

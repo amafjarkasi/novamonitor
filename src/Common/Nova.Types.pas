@@ -28,6 +28,30 @@ type
   TAppView = (avDashboard, avInspector);
 
   /// <summary>
+  /// Quick filter modes for process list view
+  /// </summary>
+  TProcessFilterMode = (fmAll, fmHeavyMemory, fmActiveCpu, fmCriticalOnly);
+
+  TSingleDynArray = array of Single;
+
+  /// <summary>
+  /// Fixed-capacity ring buffer for rolling metric sparklines
+  /// </summary>
+  THistoryBuffer = record
+  public const
+    CAPACITY = 30;
+  private
+    FValues: array[0..CAPACITY - 1] of Single;
+    FCount: Integer;
+    FHead: Integer;
+  public
+    procedure Clear;
+    procedure Add(const AValue: Single);
+    function Count: Integer;
+    function ToArray: TSingleDynArray;
+  end;
+
+  /// <summary>
   /// System metrics snapshot record
   /// </summary>
   TSystemMetrics = record
@@ -97,6 +121,7 @@ type
     function IsMonitoring: Boolean;
     function CollectSnapshot: TSystemMetrics;
     function CollectProcesses: TProcessList;
+    function TerminateProcessById(const AProcessId: Cardinal): Boolean;
   end;
 
   /// <summary>
@@ -111,6 +136,42 @@ type
   end;
 
 implementation
+
+{ THistoryBuffer }
+
+procedure THistoryBuffer.Clear;
+begin
+  FCount := 0;
+  FHead := 0;
+  FillChar(FValues, SizeOf(FValues), 0);
+end;
+
+procedure THistoryBuffer.Add(const AValue: Single);
+begin
+  FValues[FHead] := AValue;
+  FHead := (FHead + 1) mod CAPACITY;
+  if FCount < CAPACITY then
+    Inc(FCount);
+end;
+
+function THistoryBuffer.Count: Integer;
+begin
+  Result := FCount;
+end;
+
+function THistoryBuffer.ToArray: TSingleDynArray;
+var
+  I, StartIdx: Integer;
+begin
+  SetLength(Result, FCount);
+  if FCount < CAPACITY then
+    StartIdx := 0
+  else
+    StartIdx := FHead;
+
+  for I := 0 to FCount - 1 do
+    Result[I] := FValues[(StartIdx + I) mod CAPACITY];
+end;
 
 { TSystemMetrics }
 

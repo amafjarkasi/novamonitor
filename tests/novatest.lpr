@@ -4,7 +4,9 @@ program novatest;
 
 uses
   Interfaces, // LCL unit initialization (no GUI created by this console test)
+  Windows,
   Forms,
+  Graphics,
   SysUtils,
   Classes,
   fpjson,
@@ -43,11 +45,49 @@ var
   HasCpu: Boolean;
   I: Integer;
   VM: TMainViewModel;
+  Hist: THistoryBuffer;
+  Arr: TSingleDynArray;
+  AllPass: Boolean;
+  BlendedCol: TColor;
 begin
   OutDir := ExtractFilePath(ParamStr(0));
   try
+    // --- THistoryBuffer tests ---
+    WriteLn('Testing THistoryBuffer...');
+    Hist.Clear;
+    Check('history: initial count is 0', Hist.Count = 0);
+    Check('history: initial ToArray is empty', Length(Hist.ToArray) = 0);
+
+    for I := 1 to 5 do
+      Hist.Add(I * 10.0);
+    Check('history: count after 5 adds is 5', Hist.Count = 5);
+    Arr := Hist.ToArray;
+    Check('history: ToArray length matches count', Length(Arr) = 5);
+    Check('history: first element correct', Arr[0] = 10.0);
+    Check('history: last element correct', Arr[4] = 50.0);
+
+    // Overflow beyond CAPACITY (30 samples)
+    Hist.Clear;
+    for I := 1 to 35 do
+      Hist.Add(I * 1.0);
+    Check('history: count capped at 30', Hist.Count = 30);
+    Arr := Hist.ToArray;
+    Check('history: ToArray length capped at 30', Length(Arr) = 30);
+    Check('history: oldest sample is 6.0 after 35 adds', Arr[0] = 6.0);
+    Check('history: newest sample is 35.0 after 35 adds', Arr[29] = 35.0);
+
+    // --- Color blend test ---
+    BlendedCol := TUIUtils.BlendColor(clBlack, clWhite, 0.5);
+    Check('ui: BlendColor mid-point is non-zero', BlendedCol <> clBlack);
+
     Svc := TMetricsService.Create;
     Exp := TExportService.Create;
+
+    // --- TerminateProcessById security guard tests ---
+    WriteLn('Testing Process Termination Guards...');
+    Check('terminate: PID 0 (Idle) guarded', not Svc.TerminateProcessById(0));
+    Check('terminate: PID 4 (System) guarded', not Svc.TerminateProcessById(4));
+    Check('terminate: PID CurrentProcess guarded', not Svc.TerminateProcessById(GetCurrentProcessId));
 
     // --- system snapshot ---
     Snap := Svc.CollectSnapshot;
@@ -142,9 +182,15 @@ begin
         VM.Initialize;
         Check('vm: initialized metrics', VM.LatestMetrics.TotalPhysicalMB > 0);
         Check('vm: filtered processes loaded', VM.FilteredProcesses.Count > 0);
+        Check('vm: cpu history populated', VM.CpuHistory.Count > 0);
+        Check('vm: ram history populated', VM.RamHistory.Count > 0);
+
+        // Search Filter
         VM.SetSearchFilter('svchost');
         Check('vm: search filter applied', VM.FilteredProcesses.Count > 0);
         VM.SetSearchFilter('');
+
+        // Sorting
         VM.SetSort(0); // Sort by PID
         Check('vm: sort by PID', VM.FilteredProcesses.Count > 0);
         VM.SetSort(1); // Sort by Name
@@ -153,6 +199,34 @@ begin
         Check('vm: sort by CPU', VM.FilteredProcesses.Count > 0);
         VM.SetSort(3); // Sort by RAM
         Check('vm: sort by RAM', VM.FilteredProcesses.Count > 0);
+
+        // Quick-Filter Modes
+        VM.SetFilterMode(fmHeavyMemory);
+        Check('vm: filter mode fmHeavyMemory', VM.FilterMode = fmHeavyMemory);
+        AllPass := True;
+        for I := 0 to VM.FilteredProcesses.Count - 1 do
+          if VM.FilteredProcesses[I].MemoryWorkingSetMB < 400.0 then
+            AllPass := False;
+        Check('vm: fmHeavyMemory elements all >= 400MB', AllPass);
+
+        VM.SetFilterMode(fmActiveCpu);
+        Check('vm: filter mode fmActiveCpu', VM.FilterMode = fmActiveCpu);
+        AllPass := True;
+        for I := 0 to VM.FilteredProcesses.Count - 1 do
+          if VM.FilteredProcesses[I].CpuSharePercent < 2.0 then
+            AllPass := False;
+        Check('vm: fmActiveCpu elements all >= 2%', AllPass);
+
+        VM.SetFilterMode(fmCriticalOnly);
+        Check('vm: filter mode fmCriticalOnly', VM.FilterMode = fmCriticalOnly);
+        AllPass := True;
+        for I := 0 to VM.FilteredProcesses.Count - 1 do
+          if not (VM.FilteredProcesses[I].Status in [isCritical, isWarning]) then
+            AllPass := False;
+        Check('vm: fmCriticalOnly elements all in [Critical, Warning]', AllPass);
+
+        VM.SetFilterMode(fmAll);
+        Check('vm: filter mode fmAll resets', (VM.FilterMode = fmAll) and (VM.FilteredProcesses.Count > 0));
       finally
         VM.Free;
       end;

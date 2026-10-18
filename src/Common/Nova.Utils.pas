@@ -65,6 +65,17 @@ type
     /// </summary>
     class procedure DrawProgressBar(const ACanvas: TCanvas; const ARect: TRect;
       const APercent: Single; const ABgColor, ABarColor: TColor); static;
+
+    /// <summary>
+    /// Linearly blend two TColors by ratio [0..1]
+    /// </summary>
+    class function BlendColor(const C1, C2: TColor; const ARatio: Single): TColor; static;
+
+    /// <summary>
+    /// Render a real-time sparkline graph with gradient area fill and indicator dot
+    /// </summary>
+    class procedure DrawSparkline(const ACanvas: TCanvas; const ARect: TRect;
+      const AValues: array of Single; const ALineColor, AFillColor: TColor); static;
   end;
 
 implementation
@@ -239,6 +250,106 @@ begin
     ACanvas.Brush.Color := ABarColor;
     ACanvas.RoundRect(BarR.Left, BarR.Top, BarR.Right, BarR.Bottom, 4, 4);
   end;
+end;
+
+class function TUIUtils.BlendColor(const C1, C2: TColor; const ARatio: Single): TColor;
+var
+  RGB1, RGB2: Longint;
+  R1, G1, B1, R2, G2, B2: Byte;
+  R, G, B: Byte;
+  ClampedRatio: Single;
+begin
+  ClampedRatio := ARatio;
+  if ClampedRatio < 0.0 then ClampedRatio := 0.0;
+  if ClampedRatio > 1.0 then ClampedRatio := 1.0;
+
+  RGB1 := ColorToRGB(C1);
+  RGB2 := ColorToRGB(C2);
+
+  R1 := RGB1 and $FF;
+  G1 := (RGB1 shr 8) and $FF;
+  B1 := (RGB1 shr 16) and $FF;
+
+  R2 := RGB2 and $FF;
+  G2 := (RGB2 shr 8) and $FF;
+  B2 := (RGB2 shr 16) and $FF;
+
+  R := Round(R1 * (1.0 - ClampedRatio) + R2 * ClampedRatio);
+  G := Round(G1 * (1.0 - ClampedRatio) + G2 * ClampedRatio);
+  B := Round(B1 * (1.0 - ClampedRatio) + B2 * ClampedRatio);
+
+  Result := (B shl 16) or (G shl 8) or R;
+end;
+
+class procedure TUIUtils.DrawSparkline(const ACanvas: TCanvas; const ARect: TRect;
+  const AValues: array of Single; const ALineColor, AFillColor: TColor);
+var
+  N, I: Integer;
+  W, H: Integer;
+  MaxVal, MinVal: Single;
+  Pts: array of TPoint;
+  PolyPts: array of TPoint;
+  X, Y: Integer;
+  Normalized: Single;
+begin
+  N := Length(AValues);
+  if N < 2 then Exit;
+  W := ARect.Right - ARect.Left;
+  H := ARect.Bottom - ARect.Top;
+  if (W <= 4) or (H <= 4) then Exit;
+
+  MaxVal := 20.0; // Dynamic scaling with 20% floor so low usage shows peaks
+  MinVal := 0.0;
+  for I := 0 to N - 1 do
+  begin
+    if AValues[I] > MaxVal then
+      MaxVal := AValues[I];
+  end;
+  if MaxVal > 100.0 then MaxVal := 100.0;
+  if MaxVal <= MinVal then MaxVal := MinVal + 1.0;
+
+  SetLength(Pts, N);
+  for I := 0 to N - 1 do
+  begin
+    X := ARect.Left + Round(I * (W - 1) / (N - 1));
+    Normalized := (AValues[I] - MinVal) / (MaxVal - MinVal);
+    if Normalized < 0.0 then Normalized := 0.0;
+    if Normalized > 1.0 then Normalized := 1.0;
+    // Y inverted: 0 at bottom, 1.0 at top
+    Y := ARect.Bottom - 2 - Round(Normalized * (H - 6));
+    Pts[I] := Point(X, Y);
+  end;
+
+  // Draw filled area under sparkline curve
+  SetLength(PolyPts, N + 2);
+  for I := 0 to N - 1 do
+    PolyPts[I] := Pts[I];
+  PolyPts[N] := Point(Pts[N - 1].X, ARect.Bottom);
+  PolyPts[N + 1] := Point(Pts[0].X, ARect.Bottom);
+
+  ACanvas.Brush.Style := bsSolid;
+  ACanvas.Brush.Color := AFillColor;
+  ACanvas.Pen.Style := psClear;
+  ACanvas.Polygon(PolyPts);
+
+  // Draw sparkline curve
+  ACanvas.Pen.Style := psSolid;
+  ACanvas.Pen.Color := ALineColor;
+  ACanvas.Pen.Width := 2;
+  ACanvas.Polyline(Pts);
+
+  // Draw current indicator dot on the newest sample
+  ACanvas.Brush.Style := bsSolid;
+  ACanvas.Brush.Color := ALineColor;
+  ACanvas.Pen.Style := psSolid;
+  ACanvas.Pen.Color := clWhite;
+  ACanvas.Pen.Width := 1;
+  ACanvas.Ellipse(Pts[N - 1].X - 2, Pts[N - 1].Y - 2, Pts[N - 1].X + 3, Pts[N - 1].Y + 3);
+
+  // Restore canvas properties
+  ACanvas.Pen.Width := 1;
+  ACanvas.Pen.Style := psSolid;
+  ACanvas.Brush.Style := bsClear;
 end;
 
 end.
