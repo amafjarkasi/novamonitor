@@ -127,8 +127,9 @@ NovaMonitor is structured around a strict **Model-View-ViewModel (MVVM)** archit
 ```mermaid
 flowchart LR
     subgraph WinOS["Windows OS Kernel & Subsystems"]
-        NT["ntdll.dll\nNtQuerySystemInformation\nNtSuspend / NtResume"]
-        K32["kernel32.dll / psapi.dll\nToolhelp32 / IoCounters\nEnumProcessModules"]
+        NT["ntdll.dll\nNtQuerySystemInformation (Class 5 & 8)\nNtQueryInformationProcess (Class 60)\nNtSuspend / NtResume"]
+        K32["kernel32.dll / psapi.dll / user32.dll\nAffinityMask / GetGuiResources\nToolhelp32 / EnumProcessModules"]
+        VER["version.dll / shell32.dll\nFileVersionInfo / CompanyName\nShellExecuteExW (runas)"]
         IPH["iphlpapi.dll\nGetExtendedTcp/UdpTable\nGetIfTable Bandwidth"]
         ADV["advapi32.dll\nEnumServicesStatusExW\nStart / ControlService"]
     end
@@ -144,12 +145,13 @@ flowchart LR
     end
 
     subgraph View["Presentation Layer (src/Views)"]
-        MF["TMainForm\nVirtual ListViews (OwnerData)\nProcess Inspector Modal"]
+        MF["TMainForm\nVirtual ListViews (OwnerData)\nInspector, Affinity & Run Modals"]
         GDI["TUIUtils (GDI+ Engine)\nAnti-Aliased Cards & Sparklines"]
     end
 
     NT --> MS
     K32 --> MS
+    VER --> MS
     IPH --> MS
     ADV --> MS
     MS -->|"TThread.Queue (Async)"| MVM
@@ -170,8 +172,8 @@ sequenceDiagram
     participant UI as TMainForm (Main GUI Thread)
 
     loop Every Polling Interval (0.5s - 5.0s)
-        WT->>MS: CollectSnapshot() (CPU, RAM, Disk, Net KB/s)
-        WT->>MS: CollectProcesses() (NtQuerySystemInformation + Toolhelp32)
+        WT->>MS: CollectSnapshot() (Total & Per-Core CPU, RAM, Disk, Net KB/s)
+        WT->>MS: CollectProcesses() (NtQuerySystemInformation + GDI/USER + Cache)
         MS-->>WT: New TSystemMetrics & TProcessList
         WT->>VM: TThread.Queue -> HandleMetricsUpdate & HandleProcessesUpdate
         VM->>VM: Atomic pointer swap, ApplyFilter(), 10-Column QuickSort()
@@ -193,10 +195,12 @@ classDiagram
         +TerminateProcessById(PID) Boolean
         +SetProcessPriorityById(PID, Priority) Boolean
         +SuspendResumeProcessById(PID, Suspend) Boolean
+        +GetProcessAffinityById(PID, ProcMask, SysMask) Boolean
+        +SetProcessAffinityById(PID, ProcMask) Boolean
+        +RunNewTask(Command, RunAsAdmin) Boolean
+        +RestartProcessById(PID) Boolean
         +ControlWindowsService(Name, Action) Boolean
         +GetProcessModules(PID) TStringList
-        +CollectStartupEntries() TStartupList
-        +SetStartupEntryEnabled(Item, Enable) Boolean
     }
 
     class TMetricsService {
@@ -204,6 +208,8 @@ classDiagram
         -FPrevCpuTimes: TDictionary
         -FPrevIoBytes: TDictionary
         -FProcMetaCache: TDictionary
+        -FPrevCoreIdle: array of Int64
+        -FPrevCoreTotal: array of Int64
         -FIntervalMs: Cardinal
     }
 
@@ -217,6 +223,10 @@ classDiagram
         +ToggleTreeView()
         +SetProcessPriority(PID, Class, Name) Boolean
         +SuspendResumeProcess(PID, Suspend) Boolean
+        +GetProcessAffinity(PID, ProcMask, SysMask) Boolean
+        +SetProcessAffinity(PID, ProcMask) Boolean
+        +RunNewTask(Command, RunAsAdmin) Boolean
+        +RestartProcess(PID) Boolean
         +ControlServiceByName(Name, Action) Boolean
     }
 
@@ -226,6 +236,9 @@ classDiagram
         -lvNetwork: TListView
         -lvServices: TListView
         +ShowProcessDetailsDialog()
+        +ShowAffinityDialog()
+        +ShowRunTaskDialog()
+        +ShowCpuCoresDialog()
         +DrawMetricCard()
     }
 
@@ -240,11 +253,11 @@ classDiagram
 | :--- | :--- |
 | [`src/Common/Nova.Types.pas`](src/Common/Nova.Types.pas) | Domain records/classes (`TSystemMetrics`, `TProcessItem`, `TNetworkConnectionItem`, `TServiceItem`, `THistoryBuffer`) and service interfaces |
 | [`src/Common/Nova.Utils.pas`](src/Common/Nova.Utils.pas) | Dark/Light theme palettes, unit/rate formatters (`FormatRateKBps`), and hardware-accelerated GDI+ (`gdiplus.dll`) card & sparkline renderer |
-| [`src/Services/Nova.Service.Metrics.pas`](src/Services/Nova.Service.Metrics.pas) | Background polling thread, `NtQuerySystemInformation` kernel telemetry, GPU counters (DXGI + PDH), per-process TCP estats rates, process/service/startup control, TCP/UDP socket enumeration, and DLL inspection |
+| [`src/Services/Nova.Service.Metrics.pas`](src/Services/Nova.Service.Metrics.pas) | Background polling thread, `NtQuerySystemInformation` (process & per-core CPU telemetry), `NtQueryInformationProcess` (command line), `version.dll` publisher metadata, `user32.dll` GDI/USER object tracking, CPU affinity, task launcher, TCP/UDP socket enumeration, and DLL inspection |
 | [`src/Services/Nova.Service.Exporter.pas`](src/Services/Nova.Service.Exporter.pas) | Structured JSON and tabular CSV report serialization |
-| [`src/ViewModels/Nova.ViewModel.Main.pas`](src/ViewModels/Nova.ViewModel.Main.pas) | Presentation state, 10-column QuickSort, parent-child tree builder, search/chip filtering, and service/process commands |
-| [`src/Views/Nova.View.Main.pas`](src/Views/Nova.View.Main.pas) | Main dashboard form, virtual `OwnerData` list callbacks, Process Inspector modal dialog, and DWM/UXTheme integration |
-| [`tests/novatest.lpr`](tests/novatest.lpr) | 124-assertion automated console test runner covering telemetry, GPU, sorting, alert rules, security guards, startup entries, GDI+, and exports |
+| [`src/ViewModels/Nova.ViewModel.Main.pas`](src/ViewModels/Nova.ViewModel.Main.pas) | Presentation state, 10-column QuickSort, parent-child tree builder, extended multi-field search/chip filtering, and service/process commands |
+| [`src/Views/Nova.View.Main.pas`](src/Views/Nova.View.Main.pas) | Main dashboard form, virtual `OwnerData` list callbacks, Process Inspector modal, CPU Affinity modal, Per-Core CPU Breakdown dialog, Run Task launcher, and DWM/UXTheme integration |
+| [`tests/novatest.lpr`](tests/novatest.lpr) | 85-assertion automated console test runner covering telemetry, per-core CPU, command-line/version/handle extraction, sorting, security guards, GDI+, and exports |
 
 ---
 
@@ -263,14 +276,14 @@ NovaMonitor is engineered from the ground up to observe the system **without per
 | **Full Scan Time (340+ Processes)** | **31 ms avg** (`15–31 ms`) | 25 – 40 ms | 85 – 220 ms |
 | **Table Sort Latency (340 Rows)** | **< 0.3 ms** (in-place QuickSort) | ~2.5 ms | 12 – 45 ms (DOM diffing) |
 | **UI Redraw CPU Overhead (1.5s tick)** | **< 0.15% CPU** | 0.5 – 1.2% CPU | 2.5 – 6.0% CPU |
-| **Standalone Binary Size** | **~3.05 MB** (Zero external DLLs) | OS built-in | 120 – 180 MB |
+| **Standalone Binary Size** | **~1.90 MB** (Zero external DLLs) | OS built-in | 120 – 180 MB |
 
 ### Key Performance Optimizations
 
 1. **Single-Call Kernel Telemetry (`NtQuerySystemInformation`)**:
-   - Instead of opening 340+ individual Win32 handles on every tick to read memory, CPU times, and I/O counters, [`TMetricsService.CollectProcesses`](src/Services/Nova.Service.Metrics.pas) fetches the entire kernel process table in **one syscall** (`SystemProcessInformation`). This simultaneously unlocks accurate telemetry for protected system processes (`System`, `MsMpEng.exe`, `Memory Compression`) and cuts syscall overhead by **>85%**.
-2. **`O(1)` PID Security & Path Metadata Caching (`FProcMetaCache`)**:
-   - Expensive SID-to-username lookups (`OpenProcessToken` + `LookupAccountSidW`), image path queries (`QueryFullProcessImageNameW`), and architecture checks (`IsWow64Process`) are resolved once per PID and cached in a hash map. Subsequent scans complete in **15 ms** across 340+ processes.
+   - Instead of opening 340+ individual Win32 handles on every tick to read memory, CPU times, handle counts, and I/O counters, [`TMetricsService.CollectProcesses`](src/Services/Nova.Service.Metrics.pas) fetches the entire kernel process table in **one syscall** (`SystemProcessInformation`). This simultaneously unlocks accurate telemetry for protected system processes (`System`, `MsMpEng.exe`, `Memory Compression`) and cuts syscall overhead by **>85%**.
+2. **`O(1)` PID Security, Command-Line & Publisher Metadata Caching (`FProcMetaCache`)**:
+   - Expensive SID-to-username lookups (`OpenProcessToken` + `LookupAccountSidW`), image path queries (`QueryFullProcessImageNameW`), command-line extraction (`NtQueryInformationProcess` Class `60`), PE version resources (`version.dll`), and architecture checks (`IsWow64Process`) are resolved once per PID and cached in a hash map.
 3. **Zero-Allocation Virtual List Streaming (`OwnerData = True`)**:
    - `lvProcesses`, `lvNetwork`, and `lvServices` never allocate `TListItem` objects for off-screen rows. Only the ~25 currently visible rows in the viewport are queried on demand during WM_NOTIFY paint cycles, keeping memory allocation at **0 bytes per tick**.
 4. **Flicker-Free Native Double Buffering (`LVS_EX_DOUBLEBUFFER`)**:
@@ -282,7 +295,7 @@ NovaMonitor is engineered from the ground up to observe the system **without per
 
 ## 🧪 Automated Testing
 
-NovaMonitor ships with a **124-assertion automated test suite** ([`tests/novatest.lpr`](tests/novatest.lpr)) that validates data structures, GDI+ rendering, GPU telemetry, Win32 security and process-control guards, live telemetry bounds, threshold alert rules, startup entry enumeration, 11-column sorting, and JSON/CSV report schemas.
+NovaMonitor ships with an **85-assertion automated test suite** ([`tests/novatest.lpr`](tests/novatest.lpr)) that validates data structures, GDI+ rendering, Win32 security and process-control guards, live per-core telemetry bounds, command-line/version/handle extraction, 10-column sorting, and JSON/CSV report schemas.
 
 ```powershell
 # Compile and execute the automated test suite
@@ -293,16 +306,13 @@ lazbuild -B tests\novatest.lpi
 | Test Category | Assertions | Verified Behaviors |
 | :--- | :---: | :--- |
 | **Ring Buffer (`THistoryBuffer`)** | `10` | Initial state, element ordering, 30-sample circular capacity cap, and oldest-sample eviction |
-| **GDI+ Rendering & Unit Formatters** | `7` | `BlendColor`, `DrawCard`, `DrawProgressBar`, `DrawBadge`, and `DrawSparkline` gradient fills; `FormatRateKBps` MB/s and zero-rate formatting |
+| **GDI+ Rendering & Unit Formatters** | `8` | `BlendColor`, `DrawCard`, `DrawProgressBar`, `DrawBadge`, and `DrawSparkline` gradient fills; `FormatRateKBps` MB/s and zero-rate formatting |
 | **Process Security & Control Guards** | `15` | `PID 0`, `PID 4`, and `CurrentProcessId` guards on terminate, suspend, priority, and restart; CPU affinity mask get/set with `PID 0` and empty-mask guards; Run Task empty-command guard; live DLL enumeration via `GetProcessModules` |
-| **Dynamic Polling & System Snapshot** | `11` | Live interval switching (`1500ms` → `500ms` → `2500ms`), CPU `[0..100%]`, RAM bounds, Disk bounds, and Network `KB/s` rates |
-| **GPU Telemetry (DXGI + PDH)** | `6` | Adapter enumeration via `dxgi.dll`, engine utilization bounds across consecutive collects, adapter naming, and non-negative VRAM counters |
-| **Process Enumeration & Scan Benchmark** | `4` | Multi-pass process scan (`~31 ms` average across 344+ processes), RAM sorting, non-zero CPU delta, and per-process network rates ≥ 0 |
+| **Dynamic Polling & System Snapshot** | `11` | Live interval switching (`1500ms` → `500ms` → `2500ms`), CPU `[0..100%]`, per-logical-core `CoreUsages` array, RAM bounds, Disk bounds, and Network `KB/s` rates |
+| **Process Enumeration & Scan Benchmark** | `3` | Multi-pass process scan (`~31 ms` average across 340+ processes), RAM sorting, and non-zero CPU delta |
 | **Process Metadata Extraction** | `5` | Full command lines via `NtQueryInformationProcess(60)`, kernel `HandleCount`, digital publisher via `version.dll`, image path, and user account |
-| **JSON & CSV Report Exporters** | `13` | Schema validation (`generator`, `timestamp`, `systemMetrics` incl. GPU, `processes` with `networkIoKBps`) and CSV row/header parity |
-| **Threshold Alert Rules (`TAlertRules`)** | `7` | Sustained-breach streak gating, danger raise with severity, cooldown suppression and re-alert window, and hysteresis recovery without duplicates |
-| **Startup Programs** | `5` | Registry/folder enumeration, enabled entries present, name/command completeness, and nil/empty-name write guards |
-| **ViewModel, Sorting, Tree & Views** | `36` | All 11 process columns (`0..10`), quick-filter modes (`fmHeavyMemory`, `fmActiveCpu`, `fmCriticalOnly`, `fmAll`), hierarchical `TreeLevel` construction, Network socket view, Services status filtering, and Startup view/search |
+| **JSON & CSV Report Exporters** | `12` | Schema validation (`generator`, `timestamp`, `systemMetrics`, `processes`) and CSV row/header parity |
+| **ViewModel, Sorting, Tree & Views** | `16` | All 10 process columns (`0..9`), quick-filter modes (`fmHeavyMemory`, `fmActiveCpu`, `fmCriticalOnly`, `fmAll`), hierarchical `TreeLevel` construction, Network socket view, and Services status filtering |
 | **Network Sockets & Windows Services** | `5` | Live TCP/UDP connection collection with valid local ports and running-service enumeration |
 
 ---
