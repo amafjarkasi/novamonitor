@@ -12,6 +12,11 @@ uses
   Classes,
   SyncObjs,
   Generics.Collections,
+  {$IFDEF FPC}
+  Registry,
+  {$ELSE}
+  Winapi.Registry,
+  {$ENDIF}
   Nova.Types;
 
 type
@@ -87,8 +92,28 @@ type
     FPrevProcTotalTime: Int64;
     FPrevProcIoTick: UInt64;
 
+    // Per-PID TCP byte counters (GetPerTcpConnectionEStats) for per-process network rates
+    FPrevProcNet: TDictionary<Cardinal, Int64>;
+    FCurProcNet: TDictionary<Cardinal, Int64>;
+    FHasPrevProcNetSample: Boolean;
+    // GPU telemetry: PDH query with engine-utilization and process-memory counters,
+    // plus a one-time DXGI adapter enumeration cache
+    FGpuPdhQuery: THandle;
+    FGpuEngCounter: THandle;
+    FGpuLocalCounter: THandle;
+    FGpuNonLocalCounter: THandle;
+    FGpuPdhState: Integer; // 0 = not attempted, 1 = ready, 2 = unavailable
+    FGpuAdapterName: string;
+    FGpuDedicatedTotalMB: UInt64;
+    FGpuAdapterCount: Integer;
+    FGpuAdapterDone: Boolean;
+
     function CalculateCpuUsage: Single;
     function CalculateCoreUsages: TSingleDynArray;
+    procedure EnsureGpuTelemetry;
+    procedure CloseGpuTelemetry;
+    procedure CollectGpuInfo(var AGpu: TGpuInfo);
+    procedure CollectTcpEstatsBytes(const AMap: TDictionary<Cardinal, Int64>);
   public
     constructor Create;
     destructor Destroy; override;
@@ -113,6 +138,8 @@ type
     function RestartProcessById(const AProcessId: Cardinal): Boolean;
     function ControlWindowsService(const AServiceName: string; const AAction: Integer): Boolean;
     function GetProcessModules(const AProcessId: Cardinal): TStringList;
+    function CollectStartupEntries: TStartupList;
+    function SetStartupEntryEnabled(const AItem: TStartupItem; const AEnable: Boolean): Boolean;
   end;
 
 implementation
@@ -221,19 +248,35 @@ begin
   FCurProcTimes := TDictionary<Cardinal, Int64>.Create;
   FPrevProcIo := TDictionary<Cardinal, Int64>.Create;
   FCurProcIo := TDictionary<Cardinal, Int64>.Create;
+  FPrevProcNet := TDictionary<Cardinal, Int64>.Create;
+  FCurProcNet := TDictionary<Cardinal, Int64>.Create;
+  FHasPrevProcNetSample := False;
   FProcMetaCache := TDictionary<Cardinal, TProcessMeta>.Create;
   FHasPrevProcSample := False;
   FPrevProcTotalTime := 0;
   FPrevProcIoTick := 0;
+  FGpuPdhQuery := 0;
+  FGpuEngCounter := 0;
+  FGpuLocalCounter := 0;
+  FGpuNonLocalCounter := 0;
+  FGpuPdhState := 0;
+  FGpuDedicatedTotalMB := 0;
+  FGpuAdapterCount := 0;
+  FGpuAdapterDone := False;
   FIntervalMs := 1500;
 end;
 
 destructor TMetricsService.Destroy;
 begin
   StopMonitoring;
+  {$IFDEF MSWINDOWS}
+  CloseGpuTelemetry;
+  {$ENDIF}
   FProcMetaCache.Free;
   FCurProcIo.Free;
   FPrevProcIo.Free;
+  FCurProcNet.Free;
+  FPrevProcNet.Free;
   FCurProcTimes.Free;
   FPrevProcTimes.Free;
   FLock.Free;
@@ -480,6 +523,80 @@ type
     hProcess: THandle;
   end;
 
+  // PDH formatted counter value (union of long / large / double after CStatus)
+  TPdhFmtCounterValue = record
+    CStatus: LongInt;
+    case Integer of
+      0: (LongValue: LongInt);
+      1: (LargeValue: Int64);
+      2: (DoubleValue: Double);
+  end;
+
+  TPdhFmtCounterValueItemW = record
+    SzValue: PWideChar;
+    FmtValue: TPdhFmtCounterValue;
+  end;
+  PPdhFmtCounterValueItemW = ^TPdhFmtCounterValueItemW;
+
+  TPdhItemArray = array[0..0] of TPdhFmtCounterValueItemW;
+  PPdhItemArray = ^TPdhItemArray;
+
+  // DXGI adapter description (mirrors DXGI_ADAPTER_DESC); loaded via vtable
+  // calls so no DirectX headers or import libraries are required
+  TDXGIAdapterDesc = record
+    Description: array[0..127] of WideChar;
+    VendorId: DWORD;
+    DeviceId: DWORD;
+    SubSysId: DWORD;
+    Revision: DWORD;
+    DedicatedVideoMemory: NativeUInt;
+    DedicatedSystemMemory: NativeUInt;
+    SharedSystemMemory: NativeUInt;
+    Reserved: NativeUInt;
+  end;
+
+  TDxgiAdapterVtable = record
+    QueryInterface: Pointer;
+    AddRef: Pointer;
+    Release: function(self: Pointer): Cardinal; stdcall;
+    SetPrivateData: Pointer;
+    SetPrivateDataInterface: Pointer;
+    GetPrivateData: Pointer;
+    GetParent: Pointer;
+    EnumOutputs: Pointer;
+    GetDesc: function(self: Pointer; out ADesc: TDXGIAdapterDesc): HResult; stdcall;
+    CheckInterfaceSupport: Pointer;
+  end;
+  PDxgiAdapterVtable = ^TDxgiAdapterVtable;
+
+  TDxgiAdapterObj = record
+    Vtbl: PDxgiAdapterVtable;
+  end;
+  PDxgiAdapterObj = ^TDxgiAdapterObj;
+
+  // IDXGIFactory: IUnknown(3) + IDXGIObject(4), then EnumAdapters at slot 7
+  TDxgiFactoryVtable = record
+    QueryInterface: Pointer;
+    AddRef: Pointer;
+    Release: function(self: Pointer): Cardinal; stdcall;
+    SetPrivateData: Pointer;
+    SetPrivateDataInterface: Pointer;
+    GetPrivateData: Pointer;
+    GetParent: Pointer;
+    EnumAdapters: function(self: Pointer; Adapter: DWORD; out pAdapter: PDxgiAdapterObj): HResult; stdcall;
+    MakeWindowAssociation: Pointer;
+    GetWindowAssociation: Pointer;
+    CreateSwapChain: Pointer;
+  end;
+  PDxgiFactoryVtable = ^TDxgiFactoryVtable;
+
+  TDxgiFactoryObj = record
+    Vtbl: PDxgiFactoryVtable;
+  end;
+  PDxgiFactoryObj = ^TDxgiFactoryObj;
+
+  TCreateDxgiFactory1 = function(const riid: TGUID; out ppFactory: Pointer): HResult; stdcall;
+
 const
   // Local declarations shadow Windows-unit constants where present
   PROCESS_QUERY_LIMITED_INFORMATION = $1000;
@@ -497,6 +614,24 @@ const
 
   GR_GDIOBJECTS = 0;
   GR_USEROBJECTS = 1;
+
+  // PDH formats / status
+  PDH_FMT_DOUBLE = $00000200;
+  PDH_MORE_DATA = DWORD($800007D2);
+  PDH_ERROR_SUCCESS = 0;
+
+  // TCP extended estats: TcpConnectionEstatsData rod layout is four ULONG64s
+  TcpConnectionEstatsData = 1;
+  TcpEstatsRodBytes = 32;
+
+  // Startup enumeration roots (relative paths under the respective hives)
+  RunKeyPath = 'Software\Microsoft\Windows\CurrentVersion\Run';
+  RunKeyPathWow64 = 'Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Run';
+  StartupApprovedRun = 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run';
+  StartupApprovedStartup = 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Startup';
+
+  CSIDL_STARTUP = $0007;
+  CSIDL_COMMON_STARTUP = $0018;
 
   TCP_TABLE_OWNER_PID_ALL = 5;
   UDP_TABLE_OWNER_PID = 1;
@@ -560,10 +695,145 @@ function CloseServiceHandle(hSCObject: THandle): BOOL; stdcall; external 'advapi
 function GetExtendedTcpTable(pTcpTable: Pointer; pdwSize: PDWORD; bOrder: BOOL; ulAf: ULONG; TableClass: Integer; Reserved: ULONG): DWORD; stdcall; external 'iphlpapi.dll' name 'GetExtendedTcpTable';
 function GetExtendedUdpTable(pUdpTable: Pointer; pdwSize: PDWORD; bOrder: BOOL; ulAf: ULONG; TableClass: Integer; Reserved: ULONG): DWORD; stdcall; external 'iphlpapi.dll' name 'GetExtendedUdpTable';
 function GetIfTable(pIfTable: Pointer; var pdwSize: ULONG; bOrder: BOOL): DWORD; stdcall; external 'iphlpapi.dll' name 'GetIfTable';
+function GetPerTcpConnectionEStats(Row: Pointer; EstatsType: Integer; Rw: PByte; RwLength: DWORD; RwOffset: DWORD; Rod: PByte; RodLength: DWORD; RodOffset: DWORD; RodData: PByte; RodDataLength: DWORD; RodDataOffset: DWORD): DWORD; stdcall; external 'iphlpapi.dll' name 'GetPerTcpConnectionEStats';
+
+// PDH counter queries for GPU engine utilization and GPU process memory.
+// PdhAddEnglishCounterW accepts English counter paths on localized Windows.
+function PdhOpenQueryW(szDataSource: PWideChar; dwUserData: DWORD; var phQuery: THandle): DWORD; stdcall; external 'pdh.dll' name 'PdhOpenQueryW';
+function PdhAddEnglishCounterW(hQuery: THandle; szFullCounterPath: PWideChar; dwUserData: DWORD; var phCounter: THandle): DWORD; stdcall; external 'pdh.dll' name 'PdhAddEnglishCounterW';
+function PdhCollectQueryData(hQuery: THandle): DWORD; stdcall; external 'pdh.dll' name 'PdhCollectQueryData';
+function PdhGetFormattedCounterArrayW(hCounter: THandle; dwFormat: DWORD; var lpdwBufferSize: DWORD; var lpdwItemCount: DWORD; ItemBuffer: Pointer): DWORD; stdcall; external 'pdh.dll' name 'PdhGetFormattedCounterArrayW';
+procedure PdhCloseQuery(hQuery: THandle); stdcall; external 'pdh.dll' name 'PdhCloseQuery';
+
+function SHGetFolderPathW(hwndOwner: HWND; nFolder: Integer; hToken: THandle; dwFlags: DWORD; pszPath: PWideChar): HResult; stdcall; external 'shell32.dll' name 'SHGetFolderPathW';
 
 function FileTimeToLargeInt(const FT: TFileTime): Int64;
 begin
   Result := (Int64(FT.dwHighDateTime) shl 32) or FT.dwLowDateTime;
+end;
+
+function SumPdhCounterArray(const ACounter: THandle): Double;
+var
+  BufSize, ItemCount: DWORD;
+  Buf: Pointer;
+  Items: PPdhItemArray;
+  I: Integer;
+begin
+  Result := 0.0;
+  if ACounter = 0 then Exit;
+  BufSize := 0;
+  ItemCount := 0;
+  if PdhGetFormattedCounterArrayW(ACounter, PDH_FMT_DOUBLE, BufSize, ItemCount, nil) = PDH_MORE_DATA then
+  begin
+    GetMem(Buf, BufSize);
+    try
+      if PdhGetFormattedCounterArrayW(ACounter, PDH_FMT_DOUBLE, BufSize, ItemCount, Buf) = PDH_ERROR_SUCCESS then
+      begin
+        Items := PPdhItemArray(Buf);
+        for I := 0 to Integer(ItemCount) - 1 do
+          if Items^[I].FmtValue.CStatus = 0 then
+            Result := Result + Items^[I].FmtValue.DoubleValue;
+      end;
+    finally
+      FreeMem(Buf);
+    end;
+  end;
+end;
+
+procedure EnumerateDxgiAdapters(out AName: string; out ADedicatedTotalMB: UInt64; out ACount: Integer);
+const
+  IID_IDXGIFactory1: TGUID = '{770AAE78-F26F-4DBA-A829-253C83D1B387}';
+var
+  Lib: THandle;
+  CreateFn: TCreateDxgiFactory1;
+  Factory: Pointer;
+  Adapter: PDxgiAdapterObj;
+  Desc: TDXGIAdapterDesc;
+  Idx: DWORD;
+  BestMB, MB: UInt64;
+begin
+  AName := '';
+  ADedicatedTotalMB := 0;
+  ACount := 0;
+  Lib := Windows.LoadLibrary('dxgi.dll');
+  if Lib = 0 then Exit;
+  try
+    @CreateFn := Windows.GetProcAddress(Lib, 'CreateDXGIFactory1');
+    if not Assigned(CreateFn) then Exit;
+    if CreateFn(IID_IDXGIFactory1, Factory) <> 0 then Exit;
+    try
+      BestMB := 0;
+      Idx := 0;
+      while PDxgiFactoryObj(Factory)^.Vtbl^.EnumAdapters(Factory, Idx, Adapter) = 0 do
+      begin
+        Inc(ACount);
+        if PDxgiAdapterObj(Adapter)^.Vtbl^.GetDesc(Adapter, Desc) = 0 then
+        begin
+          MB := Desc.DedicatedVideoMemory;
+          if MB > BestMB then
+          begin
+            BestMB := MB;
+            AName := Trim(WideCharToString(@Desc.Description[0]));
+            ADedicatedTotalMB := BestMB;
+          end;
+        end;
+        PDxgiAdapterObj(Adapter)^.Vtbl^.Release(Adapter);
+        Inc(Idx);
+      end;
+    finally
+      PDxgiFactoryObj(Factory)^.Vtbl^.Release(Factory);
+    end;
+  finally
+    Windows.FreeLibrary(Lib);
+  end;
+end;
+
+function ExpandEnvStr(const S: string): string;
+var
+  WS: WideString;
+  Buf: array[0..1023] of WideChar;
+begin
+  Result := S;
+  if Pos('%', S) = 0 then Exit;
+  WS := WideString(S);
+  FillChar(Buf, SizeOf(Buf), 0);
+  if Windows.ExpandEnvironmentStringsW(PWideChar(WS), @Buf[0], 1024) > 0 then
+    Result := WideCharToString(@Buf[0]);
+end;
+
+// Reads the Explorer StartupApproved toggle for one autostart value.
+// Result: 1 = enabled, 0 = disabled, -1 = no record (enabled by default).
+function ReadStartupApproved(const ARoot: HKEY; const ASubKey, AValueName: string): Integer;
+var
+  Reg: TRegistry;
+  Buf: array[0..11] of Byte;
+begin
+  Result := -1;
+  Reg := TRegistry.Create(KEY_READ or KEY_WOW64_64KEY);
+  try
+    Reg.RootKey := ARoot;
+    if Reg.OpenKeyReadOnly(ASubKey) and (Reg.GetDataSize(AValueName) >= 1) then
+    begin
+      FillChar(Buf, SizeOf(Buf), 0);
+      Reg.ReadBinaryData(AValueName, Buf, SizeOf(Buf));
+      if (Buf[0] and 1) = 0 then
+        Result := 1   // 0x02... = enabled
+      else
+        Result := 0;  // 0x03... = disabled
+    end;
+  finally
+    Reg.Free;
+  end;
+end;
+
+function GetStartupFolderPath(const ACsidl: Integer): string;
+var
+  Buf: array[0..1023] of WideChar;
+begin
+  Result := '';
+  FillChar(Buf, SizeOf(Buf), 0);
+  if SHGetFolderPathW(0, ACsidl, 0, 0, @Buf[0]) = 0 then
+    Result := WideCharToString(@Buf[0]);
 end;
 
 function PriorityClassToStr(const APrio: DWORD; const ABasePrio: LongInt): string;
@@ -949,6 +1219,7 @@ begin
     end;
 
     Result.UptimeSeconds := GetTickCount64 div 1000;
+    CollectGpuInfo(Result.Gpu);
     Result.Timestamp := Now;
   finally
     FLock.Leave;
@@ -967,6 +1238,13 @@ begin
   Result.FreeDiskGB := 332.0;
   Result.DiskUsagePercent := 35.1;
   Result.UptimeSeconds := 3600;
+  Result.Gpu.Name := 'Virtual WARP Adapter';
+  Result.Gpu.EngineUsagePercent := 12.0;
+  Result.Gpu.DedicatedTotalMB := 512;
+  Result.Gpu.DedicatedUsedMB := 128;
+  Result.Gpu.SharedUsageMB := 64;
+  Result.Gpu.AdapterCount := 1;
+  Result.Gpu.Available := True;
   Result.Timestamp := Now;
 end;
 {$ENDIF}
@@ -988,6 +1266,7 @@ var
   ProcId: Cardinal;
   ProcTotal, TotalNow, TotalDelta, PrevProc: Int64;
   ProcIoBytes, PrevIo: Int64;
+  NetNow, PrevNet: Int64;
   CurIoTick, IoElapsedMs: UInt64;
   PrioClass, HandlesCnt, GdiCnt, UserCnt: DWORD;
   BasePrio: LongInt;
@@ -1198,6 +1477,23 @@ begin
     finally
       KernelStats.Free;
     end;
+
+    // Per-process network rates: cumulative TCP estats byte counters per PID,
+    // differentiated against the previous scan over the same elapsed window
+    FCurProcNet.Clear;
+    CollectTcpEstatsBytes(FCurProcNet);
+    for Idx := 0 to Result.Count - 1 do
+    begin
+      Item := Result[Idx];
+      if FHasPrevProcNetSample and (IoElapsedMs > 0) and
+         FCurProcNet.TryGetValue(Item.Id, NetNow) and
+         FPrevProcNet.TryGetValue(Item.Id, PrevNet) and (NetNow > PrevNet) then
+        Item.NetIoKBps := ((NetNow - PrevNet) / 1024.0) * (1000.0 / IoElapsedMs);
+    end;
+    FPrevProcNet.Free;
+    FPrevProcNet := FCurProcNet;
+    FCurProcNet := TDictionary<Cardinal, Int64>.Create;
+    FHasPrevProcNetSample := True;
 
     // This scan becomes the baseline for the next one; free the replaced
     // dictionary so each cycle does not orphan one TDictionary instance
@@ -1605,6 +1901,305 @@ end;
 {$ELSE}
 begin
   Result := TStringList.Create;
+end;
+{$ENDIF}
+
+procedure TMetricsService.EnsureGpuTelemetry;
+{$IFDEF MSWINDOWS}
+var
+  PathEng, PathLocal, PathNonLocal: WideString;
+  Name: string;
+  TotalMB: UInt64;
+  Count: Integer;
+begin
+  if not FGpuAdapterDone then
+  begin
+    FGpuAdapterDone := True;
+    EnumerateDxgiAdapters(Name, TotalMB, Count);
+    FGpuAdapterName := Name;
+    FGpuDedicatedTotalMB := TotalMB div (1024 * 1024);
+    FGpuAdapterCount := Count;
+  end;
+
+  if FGpuPdhState = 0 then
+  begin
+    FGpuPdhState := 2;
+    if PdhOpenQueryW(nil, 0, FGpuPdhQuery) = PDH_ERROR_SUCCESS then
+    begin
+      PathEng := '\GPU Engine(*)\Utilization Percentage';
+      PathLocal := '\GPU Process Memory(*)\Local Usage';
+      PathNonLocal := '\GPU Process Memory(*)\Non Local Usage';
+      if (PdhAddEnglishCounterW(FGpuPdhQuery, PWideChar(PathEng), 0, FGpuEngCounter) = PDH_ERROR_SUCCESS) and
+         (PdhAddEnglishCounterW(FGpuPdhQuery, PWideChar(PathLocal), 0, FGpuLocalCounter) = PDH_ERROR_SUCCESS) and
+         (PdhAddEnglishCounterW(FGpuPdhQuery, PWideChar(PathNonLocal), 0, FGpuNonLocalCounter) = PDH_ERROR_SUCCESS) then
+        FGpuPdhState := 1
+      else
+      begin
+        PdhCloseQuery(FGpuPdhQuery);
+        FGpuPdhQuery := 0;
+        FGpuEngCounter := 0;
+        FGpuLocalCounter := 0;
+        FGpuNonLocalCounter := 0;
+      end;
+    end;
+  end;
+end;
+{$ELSE}
+begin
+  FGpuPdhState := 2;
+end;
+{$ENDIF}
+
+procedure TMetricsService.CloseGpuTelemetry;
+{$IFDEF MSWINDOWS}
+begin
+  if FGpuPdhQuery <> 0 then
+    PdhCloseQuery(FGpuPdhQuery);
+  FGpuPdhQuery := 0;
+  FGpuEngCounter := 0;
+  FGpuLocalCounter := 0;
+  FGpuNonLocalCounter := 0;
+  FGpuPdhState := 0;
+end;
+{$ELSE}
+begin
+end;
+{$ENDIF}
+
+procedure TMetricsService.CollectGpuInfo(var AGpu: TGpuInfo);
+{$IFDEF MSWINDOWS}
+var
+  EngPct, LocalBytes, NonLocalBytes: Double;
+begin
+  AGpu := TGpuInfo.CreateEmpty;
+  EnsureGpuTelemetry;
+
+  AGpu.Name := FGpuAdapterName;
+  AGpu.DedicatedTotalMB := FGpuDedicatedTotalMB;
+  AGpu.AdapterCount := FGpuAdapterCount;
+  if FGpuAdapterCount > 0 then
+    AGpu.Available := True;
+
+  if FGpuPdhState = 1 then
+  begin
+    if PdhCollectQueryData(FGpuPdhQuery) = PDH_ERROR_SUCCESS then
+    begin
+      AGpu.Available := True;
+      EngPct := SumPdhCounterArray(FGpuEngCounter);
+      if EngPct < 0.0 then EngPct := 0.0;
+      if EngPct > 100.0 then EngPct := 100.0;
+      AGpu.EngineUsagePercent := EngPct;
+
+      LocalBytes := SumPdhCounterArray(FGpuLocalCounter);
+      NonLocalBytes := SumPdhCounterArray(FGpuNonLocalCounter);
+      if LocalBytes >= 0.0 then
+        AGpu.DedicatedUsedMB := Trunc(LocalBytes / (1024.0 * 1024.0));
+      if NonLocalBytes >= 0.0 then
+        AGpu.SharedUsageMB := Trunc(NonLocalBytes / (1024.0 * 1024.0));
+    end;
+  end;
+end;
+{$ELSE}
+begin
+  AGpu := TGpuInfo.CreateEmpty;
+  AGpu.Name := 'Virtual WARP Adapter';
+  AGpu.EngineUsagePercent := 12.0;
+  AGpu.DedicatedTotalMB := 512;
+  AGpu.DedicatedUsedMB := 128;
+  AGpu.SharedUsageMB := 64;
+  AGpu.AdapterCount := 1;
+  AGpu.Available := True;
+end;
+{$ENDIF}
+
+procedure TMetricsService.CollectTcpEstatsBytes(const AMap: TDictionary<Cardinal, Int64>);
+{$IFDEF MSWINDOWS}
+var
+  TcpSize: DWORD;
+  TcpBuf: Pointer;
+  TcpTable: PMibTcpTableOwnerPid;
+  I: Integer;
+  Pid: Cardinal;
+  RwBuf: Byte;
+  RodBuf: array[0..TcpEstatsRodBytes - 1] of Byte;
+  Total, Prev: Int64;
+begin
+  AMap.Clear;
+  TcpSize := 0;
+  GetExtendedTcpTable(nil, @TcpSize, True, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
+  if TcpSize = 0 then Exit;
+  GetMem(TcpBuf, TcpSize);
+  try
+    if GetExtendedTcpTable(TcpBuf, @TcpSize, True, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0) = 0 then
+    begin
+      TcpTable := PMibTcpTableOwnerPid(TcpBuf);
+      for I := 0 to Integer(TcpTable^.dwNumEntries) - 1 do
+      begin
+        Pid := TcpTable^.table[I].dwOwningPid;
+        if (Pid = 0) or (Pid = 4) then Continue;
+
+        RwBuf := 0;
+        FillChar(RodBuf, SizeOf(RodBuf), 0);
+        // The first five DWORDs of the owner-pid row mirror MIB_TCPROW exactly
+        if GetPerTcpConnectionEStats(@TcpTable^.table[I], TcpConnectionEstatsData,
+             @RwBuf, 1, 0, nil, 0, 0, @RodBuf[0], TcpEstatsRodBytes, 0) = 0 then
+        begin
+          // Rod: ULONG64 DataBytesOut, DataSegsOut, DataBytesIn, DataSegsIn
+          Total := PInt64(@RodBuf[0])^ + PInt64(@RodBuf[16])^;
+          if AMap.TryGetValue(Pid, Prev) then
+            AMap.AddOrSetValue(Pid, Prev + Total)
+          else
+            AMap.Add(Pid, Total);
+        end;
+      end;
+    end;
+  finally
+    FreeMem(TcpBuf);
+  end;
+end;
+{$ELSE}
+begin
+  AMap.Clear;
+end;
+{$ENDIF}
+
+function TMetricsService.CollectStartupEntries: TStartupList;
+{$IFDEF MSWINDOWS}
+var
+  Reg: TRegistry;
+
+  procedure EnumRunKey(const ARoot: HKEY; const AKeyPath: string; const AKind: TStartupSourceKind);
+  var
+    Names: TStringList;
+    I: Integer;
+    Cmd: string;
+    Approved, ApprovedOther: Integer;
+    OtherRoot: HKEY;
+    Enabled: Boolean;
+  begin
+    Reg.RootKey := ARoot;
+    if not Reg.OpenKeyReadOnly(AKeyPath) then Exit;
+    Names := TStringList.Create;
+    try
+      Reg.GetValueNames(Names);
+      for I := 0 to Names.Count - 1 do
+      begin
+        if not (Reg.GetDataType(Names[I]) in [rdString, rdExpandString]) then Continue;
+        Cmd := ExpandEnvStr(Trim(Reg.ReadString(Names[I])));
+        if Cmd = '' then Continue;
+
+        if ARoot = HKEY_CURRENT_USER then
+          OtherRoot := HKEY_LOCAL_MACHINE
+        else
+          OtherRoot := HKEY_CURRENT_USER;
+        Approved := ReadStartupApproved(ARoot, StartupApprovedRun, Names[I]);
+        ApprovedOther := ReadStartupApproved(OtherRoot, StartupApprovedRun, Names[I]);
+        // Missing record (-1) means enabled; an explicit disabled flag (0) wins
+        Enabled := (Approved <> 0) and (ApprovedOther <> 0);
+
+        Result.Add(TStartupItem.Create(Names[I], Cmd, AKind, Enabled));
+      end;
+    finally
+      Names.Free;
+    end;
+  end;
+
+  procedure EnumStartupFolder(const ACsidl: Integer; const AKind: TStartupSourceKind);
+  var
+    Folder: string;
+    Sr: TSearchRec;
+    Approved: Integer;
+    ApprovedRoot: HKEY;
+    Enabled: Boolean;
+  begin
+    Folder := GetStartupFolderPath(ACsidl);
+    if Folder = '' then Exit;
+    if Folder[Length(Folder)] <> '\' then Folder := Folder + '\';
+    if SysUtils.FindFirst(Folder + '*.*', faAnyFile - faDirectory, Sr) = 0 then
+    try
+      repeat
+        if (Sr.Name = '.') or (Sr.Name = '..') then Continue;
+        if AKind = suCommonStartupFolder then
+          ApprovedRoot := HKEY_LOCAL_MACHINE
+        else
+          ApprovedRoot := HKEY_CURRENT_USER;
+        Approved := ReadStartupApproved(ApprovedRoot, StartupApprovedStartup, Sr.Name);
+        Enabled := Approved <> 0;
+        Result.Add(TStartupItem.Create(Sr.Name, Folder + Sr.Name, AKind, Enabled));
+      until SysUtils.FindNext(Sr) <> 0;
+    finally
+      SysUtils.FindClose(Sr);
+    end;
+  end;
+
+begin
+  Result := TStartupList.Create(True);
+  Reg := TRegistry.Create(KEY_READ or KEY_WOW64_64KEY);
+  try
+    EnumRunKey(HKEY_CURRENT_USER, RunKeyPath, suHkcuRun);
+    EnumRunKey(HKEY_LOCAL_MACHINE, RunKeyPath, suHklmRun);
+    EnumRunKey(HKEY_LOCAL_MACHINE, RunKeyPathWow64, suHklmRunWow64);
+  finally
+    Reg.Free;
+  end;
+  EnumStartupFolder(CSIDL_STARTUP, suUserStartupFolder);
+  EnumStartupFolder(CSIDL_COMMON_STARTUP, suCommonStartupFolder);
+end;
+{$ELSE}
+begin
+  Result := TStartupList.Create(True);
+  Result.Add(TStartupItem.Create('NovaAgent', 'C:\NovaAgent\novaagent.exe /bg', suHkcuRun, True));
+  Result.Add(TStartupItem.Create('OneSync', 'C:\Program Files\OneSync\onesync.exe', suHklmRun, False));
+end;
+{$ENDIF}
+
+function TMetricsService.SetStartupEntryEnabled(const AItem: TStartupItem; const AEnable: Boolean): Boolean;
+{$IFDEF MSWINDOWS}
+var
+  Reg: TRegistry;
+  Root: HKEY;
+  SubKey, ValueName: string;
+  Buf: array[0..11] of Byte;
+begin
+  Result := False;
+  if (AItem = nil) or (AItem.Name = '') then Exit;
+
+  case AItem.Source of
+    suHkcuRun:           begin Root := HKEY_CURRENT_USER;  SubKey := StartupApprovedRun;      ValueName := AItem.Name; end;
+    suHklmRun,
+    suHklmRunWow64:      begin Root := HKEY_LOCAL_MACHINE; SubKey := StartupApprovedRun;      ValueName := AItem.Name; end;
+    suUserStartupFolder: begin Root := HKEY_CURRENT_USER;  SubKey := StartupApprovedStartup; ValueName := AItem.Name; end;
+    suCommonStartupFolder: begin Root := HKEY_LOCAL_MACHINE; SubKey := StartupApprovedStartup; ValueName := AItem.Name; end;
+  else
+    Exit;
+  end;
+
+  // Explorer StartupApproved toggle: 12 bytes = flag DWORD + FILETIME stamp.
+  // 0x02 = enabled, 0x03 = disabled (low bit marks the disabled state).
+  FillChar(Buf, SizeOf(Buf), 0);
+  if AEnable then
+    Buf[0] := $02
+  else
+    Buf[0] := $03;
+
+  Reg := TRegistry.Create(KEY_WRITE or KEY_WOW64_64KEY);
+  try
+    Reg.RootKey := Root;
+    if Reg.OpenKey(SubKey, True) then
+    begin
+      // FPC's TRegistry.WriteBinaryData is a procedure; Delphi's returns
+      // Boolean, but calling it as a statement is valid in both compilers
+      Reg.WriteBinaryData(ValueName, Buf, SizeOf(Buf));
+      Result := True;
+      AItem.Enabled := AEnable;
+    end;
+  finally
+    Reg.Free;
+  end;
+end;
+{$ELSE}
+begin
+  Result := False;
 end;
 {$ENDIF}
 

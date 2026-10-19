@@ -6,13 +6,13 @@
   <a href="#-feature-breakdown"><img src="https://img.shields.io/badge/Architecture-MVVM%20%7C%20Clean-6366f1?style=for-the-badge" alt="Architecture" /></a>
   <a href="#-building--running"><img src="https://img.shields.io/badge/Compiler-Delphi%20%7C%20Free%20Pascal%203.2.2-38bdf8?style=for-the-badge" alt="Compiler" /></a>
   <a href="#-performance--benchmarks"><img src="https://img.shields.io/badge/Scan%20Latency-15--31ms%20(340%2B%20Procs)-10b981?style=for-the-badge" alt="Scan Latency" /></a>
-  <a href="#-automated-testing"><img src="https://img.shields.io/badge/Tests-100%2F100%20Passing-34d399?style=for-the-badge" alt="Tests" /></a>
+  <a href="#-automated-testing"><img src="https://img.shields.io/badge/Tests-124%2F124%20Passing-34d399?style=for-the-badge" alt="Tests" /></a>
   <a href="#-fluent-desktop-ux--ergonomics"><img src="https://img.shields.io/badge/Display-Per--Monitor%20v2%20High--DPI-f59e0b?style=for-the-badge" alt="High-DPI" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-f43f5e?style=for-the-badge" alt="License" /></a>
 </p>
 
 <p align="center">
-  <strong>NovaMonitor</strong> is an ultra-low-overhead desktop system telemetry, process control, network socket, and Windows service inspection suite engineered in modern <strong>Object Pascal</strong>. Built on a strict <strong>MVVM</strong> architecture with direct Win32 &amp; NT Kernel API bindings, it compiles natively on both <strong>Lazarus / Free Pascal</strong> (LCL) and <strong>Embarcadero Delphi</strong> (VCL) with zero external runtime dependencies.
+  <strong>NovaMonitor</strong> is an ultra-low-overhead desktop system telemetry, GPU, process control, per-process network, Windows service, and startup program inspection suite engineered in modern <strong>Object Pascal</strong>. Built on a strict <strong>MVVM</strong> architecture with direct Win32 &amp; NT Kernel API bindings, it compiles natively on both <strong>Lazarus / Free Pascal</strong> (LCL) and <strong>Embarcadero Delphi</strong> (VCL) with zero external runtime dependencies.
 </p>
 
 ---
@@ -38,6 +38,7 @@ To make it easy to see everything NovaMonitor provides at a glance, features are
 | :--- | :--- | :--- |
 | **CPU Utilization & Rolling Sparkline** | `GetSystemTimes` kernel/user delta tracking + 30-sample `THistoryBuffer` | Live CPU % across logical cores with adaptive GDI+ gradient sparkline |
 | **Per-Logical-Core CPU Breakdown** | `NtQuerySystemInformation(SystemProcessorPerformanceInformation)` (`Class 8`) | Displays logical core count on the CPU card; **click the CPU card** to open a live per-core utilization dialog (`CPU Core #0` .. `CPU Core #N`) |
+| **GPU Utilization & VRAM Telemetry** | DXGI adapter enumeration (`CreateDXGIFactory1` via `dxgi.dll`) + PDH `GPU Engine(*)\Utilization Percentage` and `GPU Process Memory(*)` counters (`PdhAddEnglishCounterW`, locale-safe) | Fifth dashboard card: adapter name, engine utilization % with rolling sparkline, and dedicated/shared VRAM usage |
 | **Memory Load & Pressure Tracking** | `GlobalMemoryStatusEx` physical working set & available memory | Used vs. Total RAM (`GB`/`MB`) with dynamic threshold color shifts (`70%` warn / `85%` danger) |
 | **System Storage Capacity** | `GetDiskFreeSpaceExW` volume telemetry | Free GB, Used GB (`%`), Total GB, and dual-tone capacity progress bar |
 | **System Uptime & Thread Vitality** | `GetTickCount64` + aggregate process/thread counters | Formatted uptime (`Xd Xh Xm`), active process count, and total system thread count |
@@ -54,10 +55,11 @@ To make it easy to see everything NovaMonitor provides at a glance, features are
 | **Handle, GDI & USER Leak Detector** | Kernel `HandleCount` + `GetGuiResources` (`GR_GDIOBJECTS`, `GR_USEROBJECTS` in `user32.dll`) | Tracks per-process kernel handles, GDI objects, and USER window objects in the Process Inspector modal with automatic `[! Potential Leak]` warnings |
 | **Digital Publisher & File Version Info** | `GetFileVersionInfoW` + `VerQueryValueW` (`version.dll`) cached per PID | Extracts `CompanyName` (Digital Publisher), `FileDescription`, and `FileVersion` once per PID; searchable directly from the search bar |
 | **Per-Process Disk I/O Rate** | Kernel `ReadTransferCount + WriteTransferCount` + `GetProcessIoCounters` | Dedicated **`Disk I/O`** column displaying live `KB/s` and `MB/s` transfer rates per process |
+| **Per-Process Network I/O Rate** | `GetPerTcpConnectionEStats` (`TcpConnectionEstatsData` rod) byte counters summed per owning PID, delta-sampled across scans | Dedicated **`Network I/O`** column with live `KB/s`–`MB/s` TCP throughput per process |
 | **Process Inspector Detail Modal** | `EnumProcessModules` + `GetModuleFileNameExW` (`psapi.dll`) + PID correlation | Press <kbd>Enter</kbd>, **Double-Click** a row, or click **`Inspect...`** to view full metadata, command line, handles/GDI/USER counts, bound TCP/UDP sockets, hosted Windows Services, and all loaded `.dll` modules |
 | **Hierarchical Process Tree View** | Parent-child graph reconstruction via `th32ParentProcessID` | One-click **`Tree View`** toggle indents child processes (`└─`) under their parent orchestrator |
 | **Security Owner, Arch & Path Cache** | `OpenProcessToken`, `LookupAccountSidW`, `IsWow64Process`, `QueryFullProcessImageNameW` | Displays `DOMAIN\User`, `x64`/`x86` architecture, and full executable path with `O(1)` PID caching |
-| **10-Column Interactive Sorting** | Custom QuickSort with tie-breaking across all 10 columns | Click any header (`PID`, `Name`, `User`, `Arch`, `CPU %`, `RAM`, `Disk I/O`, `Status`, `Threads`, `Path`) with `▲`/`▼` indicators |
+| **11-Column Interactive Sorting** | Custom QuickSort with tie-breaking across all 11 columns | Click any header (`PID`, `Name`, `User`, `Arch`, `CPU %`, `RAM`, `Disk I/O`, `Network I/O`, `Status`, `Threads`, `Path`) with `▲`/`▼` indicators |
 
 ---
 
@@ -76,6 +78,10 @@ To make it easy to see everything NovaMonitor provides at a glance, features are
   - Dedicated **Windows Services** view enumerating all Win32 services (`EnumServicesStatusExW`).
   - Start, stop, or restart services directly from the toolbar (**`Start`**, **`Stop`**, **`Restart`**) or right-click menu via `OpenServiceW`, `StartServiceW`, and `ControlService` (`advapi32.dll`).
   - Filter services instantly with **`[All]`**, **`[Running]`**, and **`[Stopped]`** chips plus multi-column sorting.
+- **Startup Programs Manager**:
+  - Dedicated **Startup Programs** view enumerating `HKCU`/`HKLM` `...\CurrentVersion\Run` (including the `Wow6432Node` 32-bit view) plus the per-user and all-users Startup folders (`SHGetFolderPathW`).
+  - One-click **`Enable`** / **`Disable`** toggles through the Explorer `StartupApproved` registry mechanism — the same switch Task Manager uses — so entries can be re-enabled at any time without deleting anything (`HKLM` sources may require elevation).
+  - Instant search across names, commands, and sources plus multi-column sorting and a right-click context menu.
 
 ---
 
@@ -93,6 +99,7 @@ To make it easy to see everything NovaMonitor provides at a glance, features are
 - **Quick-Filter Bottleneck Chips**: Isolate heavy workloads in one click:
   - **`[All]`** (<kbd>Ctrl</kbd>+<kbd>1</kbd>) · **`[Heavy RAM (>400MB)]`** (<kbd>Ctrl</kbd>+<kbd>2</kbd>) · **`[Active CPU (>2%)]`** (<kbd>Ctrl</kbd>+<kbd>3</kbd>) · **`[Alerts]`** (<kbd>Ctrl</kbd>+<kbd>4</kbd>)
 - **Always-on-Top Pinning & System Tray**: Pin NovaMonitor above full-screen apps (<kbd>Ctrl</kbd>+<kbd>P</kbd>) or minimize cleanly to the Windows system tray (`TTrayIcon`).
+- **Resource Threshold Alert Balloons**: A pure `TAlertRules` engine watches every snapshot — CPU ≥ 85%, memory ≥ 90%, or system disk ≥ 95% sustained across 4 consecutive samples raises a tray balloon (`ShowBalloonHint`) with a 5-minute per-channel cooldown and hysteresis-based recovery notices.
 - **JSON & CSV Telemetry Export**: Export full system snapshots and process tables to structured `.json` or `.csv` reports (<kbd>Ctrl</kbd>+<kbd>E</kbd>).
 
 #### ⌨️ Keyboard Shortcuts Reference
@@ -188,6 +195,8 @@ classDiagram
         +SuspendResumeProcessById(PID, Suspend) Boolean
         +ControlWindowsService(Name, Action) Boolean
         +GetProcessModules(PID) TStringList
+        +CollectStartupEntries() TStartupList
+        +SetStartupEntryEnabled(Item, Enable) Boolean
     }
 
     class TMetricsService {
@@ -231,11 +240,11 @@ classDiagram
 | :--- | :--- |
 | [`src/Common/Nova.Types.pas`](src/Common/Nova.Types.pas) | Domain records/classes (`TSystemMetrics`, `TProcessItem`, `TNetworkConnectionItem`, `TServiceItem`, `THistoryBuffer`) and service interfaces |
 | [`src/Common/Nova.Utils.pas`](src/Common/Nova.Utils.pas) | Dark/Light theme palettes, unit/rate formatters (`FormatRateKBps`), and hardware-accelerated GDI+ (`gdiplus.dll`) card & sparkline renderer |
-| [`src/Services/Nova.Service.Metrics.pas`](src/Services/Nova.Service.Metrics.pas) | Background polling thread, `NtQuerySystemInformation` kernel telemetry, process/service control, TCP/UDP socket enumeration, and DLL inspection |
+| [`src/Services/Nova.Service.Metrics.pas`](src/Services/Nova.Service.Metrics.pas) | Background polling thread, `NtQuerySystemInformation` kernel telemetry, GPU counters (DXGI + PDH), per-process TCP estats rates, process/service/startup control, TCP/UDP socket enumeration, and DLL inspection |
 | [`src/Services/Nova.Service.Exporter.pas`](src/Services/Nova.Service.Exporter.pas) | Structured JSON and tabular CSV report serialization |
 | [`src/ViewModels/Nova.ViewModel.Main.pas`](src/ViewModels/Nova.ViewModel.Main.pas) | Presentation state, 10-column QuickSort, parent-child tree builder, search/chip filtering, and service/process commands |
 | [`src/Views/Nova.View.Main.pas`](src/Views/Nova.View.Main.pas) | Main dashboard form, virtual `OwnerData` list callbacks, Process Inspector modal dialog, and DWM/UXTheme integration |
-| [`tests/novatest.lpr`](tests/novatest.lpr) | 100-assertion automated console test runner covering telemetry, sorting, security guards, process control, GDI+, and exports |
+| [`tests/novatest.lpr`](tests/novatest.lpr) | 124-assertion automated console test runner covering telemetry, GPU, sorting, alert rules, security guards, startup entries, GDI+, and exports |
 
 ---
 
@@ -254,7 +263,7 @@ NovaMonitor is engineered from the ground up to observe the system **without per
 | **Full Scan Time (340+ Processes)** | **31 ms avg** (`15–31 ms`) | 25 – 40 ms | 85 – 220 ms |
 | **Table Sort Latency (340 Rows)** | **< 0.3 ms** (in-place QuickSort) | ~2.5 ms | 12 – 45 ms (DOM diffing) |
 | **UI Redraw CPU Overhead (1.5s tick)** | **< 0.15% CPU** | 0.5 – 1.2% CPU | 2.5 – 6.0% CPU |
-| **Standalone Binary Size** | **~3.0 MB** (Zero external DLLs) | OS built-in | 120 – 180 MB |
+| **Standalone Binary Size** | **~3.05 MB** (Zero external DLLs) | OS built-in | 120 – 180 MB |
 
 ### Key Performance Optimizations
 
@@ -273,7 +282,7 @@ NovaMonitor is engineered from the ground up to observe the system **without per
 
 ## 🧪 Automated Testing
 
-NovaMonitor ships with a **100-assertion automated test suite** ([`tests/novatest.lpr`](tests/novatest.lpr)) that validates data structures, GDI+ rendering, Win32 security and process-control guards, live telemetry bounds, 10-column sorting, and JSON/CSV report schemas.
+NovaMonitor ships with a **124-assertion automated test suite** ([`tests/novatest.lpr`](tests/novatest.lpr)) that validates data structures, GDI+ rendering, GPU telemetry, Win32 security and process-control guards, live telemetry bounds, threshold alert rules, startup entry enumeration, 11-column sorting, and JSON/CSV report schemas.
 
 ```powershell
 # Compile and execute the automated test suite
@@ -287,10 +296,13 @@ lazbuild -B tests\novatest.lpi
 | **GDI+ Rendering & Unit Formatters** | `7` | `BlendColor`, `DrawCard`, `DrawProgressBar`, `DrawBadge`, and `DrawSparkline` gradient fills; `FormatRateKBps` MB/s and zero-rate formatting |
 | **Process Security & Control Guards** | `15` | `PID 0`, `PID 4`, and `CurrentProcessId` guards on terminate, suspend, priority, and restart; CPU affinity mask get/set with `PID 0` and empty-mask guards; Run Task empty-command guard; live DLL enumeration via `GetProcessModules` |
 | **Dynamic Polling & System Snapshot** | `11` | Live interval switching (`1500ms` → `500ms` → `2500ms`), CPU `[0..100%]`, RAM bounds, Disk bounds, and Network `KB/s` rates |
-| **Process Enumeration & Scan Benchmark** | `3` | Multi-pass process scan (`~31 ms` average across 344+ processes), RAM sorting, and non-zero CPU delta calculation |
+| **GPU Telemetry (DXGI + PDH)** | `6` | Adapter enumeration via `dxgi.dll`, engine utilization bounds across consecutive collects, adapter naming, and non-negative VRAM counters |
+| **Process Enumeration & Scan Benchmark** | `4` | Multi-pass process scan (`~31 ms` average across 344+ processes), RAM sorting, non-zero CPU delta, and per-process network rates ≥ 0 |
 | **Process Metadata Extraction** | `5` | Full command lines via `NtQueryInformationProcess(60)`, kernel `HandleCount`, digital publisher via `version.dll`, image path, and user account |
-| **JSON & CSV Report Exporters** | `11` | Schema validation (`generator`, `timestamp`, `systemMetrics`, `processes` array) and CSV row/header parity |
-| **ViewModel, Sorting, Tree & Views** | `33` | All 10 process columns (`0..9`), quick-filter modes (`fmHeavyMemory`, `fmActiveCpu`, `fmCriticalOnly`, `fmAll`), hierarchical `TreeLevel` construction, Network socket view, and Windows Services status filtering |
+| **JSON & CSV Report Exporters** | `13` | Schema validation (`generator`, `timestamp`, `systemMetrics` incl. GPU, `processes` with `networkIoKBps`) and CSV row/header parity |
+| **Threshold Alert Rules (`TAlertRules`)** | `7` | Sustained-breach streak gating, danger raise with severity, cooldown suppression and re-alert window, and hysteresis recovery without duplicates |
+| **Startup Programs** | `5` | Registry/folder enumeration, enabled entries present, name/command completeness, and nil/empty-name write guards |
+| **ViewModel, Sorting, Tree & Views** | `36` | All 11 process columns (`0..10`), quick-filter modes (`fmHeavyMemory`, `fmActiveCpu`, `fmCriticalOnly`, `fmAll`), hierarchical `TreeLevel` construction, Network socket view, Services status filtering, and Startup view/search |
 | **Network Sockets & Windows Services** | `5` | Live TCP/UDP connection collection with valid local ports and running-service enumeration |
 
 ---

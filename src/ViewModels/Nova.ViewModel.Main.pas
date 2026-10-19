@@ -32,6 +32,7 @@ type
     FCpuHistory: THistoryBuffer;
     FRamHistory: THistoryBuffer;
     FDiskHistory: THistoryBuffer;
+    FGpuHistory: THistoryBuffer;
     FVitalityHistory: THistoryBuffer;
     FFilterMode: TProcessFilterMode;
     FTreeViewEnabled: Boolean;
@@ -50,16 +51,29 @@ type
     FSvcSortColumn: Integer;
     FSvcSortAscending: Boolean;
 
+    FStartupItems: TStartupList;
+    FFilteredStartup: TStartupList;
+    FStartupSearchFilter: string;
+    FStartupSortColumn: Integer;
+    FStartupSortAscending: Boolean;
+
+    FAlertCpu: TAlertChannelState;
+    FAlertRam: TAlertChannelState;
+    FAlertDisk: TAlertChannelState;
+
     FOnMetricsUpdated: TMetricsUpdateEvent;
     FOnProcessesUpdated: TProcessListUpdateEvent;
     FOnNetworkUpdated: TNetworkListUpdateEvent;
     FOnServicesUpdated: TServiceListUpdateEvent;
+    FOnStartupUpdated: TStartupListUpdateEvent;
     FOnStatusMessage: TStatusMessageEvent;
     FOnThemeChanged: TThemeChangedEvent;
+    FOnAlert: TAlertEvent;
 
     // Column sort state:
     // 0 = PID, 1 = Name, 2 = User, 3 = Arch, 4 = CPU %,
-    // 5 = Memory, 6 = Disk I/O, 7 = Health Status, 8 = Threads, 9 = Image Path
+    // 5 = Memory, 6 = Disk I/O, 7 = Network I/O, 8 = Health Status,
+    // 9 = Threads, 10 = Image Path
     FSortColumn: Integer;
     FSortAscending: Boolean;
     FPollingIntervalMs: Cardinal;
@@ -75,6 +89,8 @@ type
     procedure SortFilteredNetwork;
     function CompareServiceItems(const A, B: TServiceItem): Integer;
     procedure SortFilteredServices;
+    function CompareStartupItems(const A, B: TStartupItem): Integer;
+    procedure SortFilteredStartup;
     function GetIsMonitoring: Boolean;
   public
     constructor Create(const AMetricsService: IMetricsService = nil;
@@ -108,6 +124,11 @@ type
     procedure SetServiceSearchFilter(const AFilter: string);
     procedure SetServiceStatusFilter(const AFilter: Integer);
     procedure SetServiceSort(const AColumn: Integer);
+
+    procedure RefreshStartupEntries;
+    procedure SetStartupSearchFilter(const AFilter: string);
+    procedure SetStartupSort(const AColumn: Integer);
+    function SetStartupEnabled(const AItem: TStartupItem; const AEnable: Boolean): Boolean;
     procedure SetPollingInterval(const AIntervalMs: Cardinal);
 
     property LatestMetrics: TSystemMetrics read FLatestMetrics;
@@ -125,19 +146,25 @@ type
     property NetSortAscending: Boolean read FNetSortAscending;
     property SvcSortColumn: Integer read FSvcSortColumn;
     property SvcSortAscending: Boolean read FSvcSortAscending;
+    property StartupSortColumn: Integer read FStartupSortColumn;
+    property StartupSortAscending: Boolean read FStartupSortAscending;
     property FilterMode: TProcessFilterMode read FFilterMode;
     property PollingIntervalMs: Cardinal read FPollingIntervalMs;
     property CpuHistory: THistoryBuffer read FCpuHistory;
     property RamHistory: THistoryBuffer read FRamHistory;
     property DiskHistory: THistoryBuffer read FDiskHistory;
+    property GpuHistory: THistoryBuffer read FGpuHistory;
     property VitalityHistory: THistoryBuffer read FVitalityHistory;
+    property StartupItems: TStartupList read FFilteredStartup;
 
     property OnMetricsUpdated: TMetricsUpdateEvent read FOnMetricsUpdated write FOnMetricsUpdated;
     property OnProcessesUpdated: TProcessListUpdateEvent read FOnProcessesUpdated write FOnProcessesUpdated;
     property OnNetworkUpdated: TNetworkListUpdateEvent read FOnNetworkUpdated write FOnNetworkUpdated;
     property OnServicesUpdated: TServiceListUpdateEvent read FOnServicesUpdated write FOnServicesUpdated;
+    property OnStartupUpdated: TStartupListUpdateEvent read FOnStartupUpdated write FOnStartupUpdated;
     property OnStatusMessage: TStatusMessageEvent read FOnStatusMessage write FOnStatusMessage;
     property OnThemeChanged: TThemeChangedEvent read FOnThemeChanged write FOnThemeChanged;
+    property OnAlert: TAlertEvent read FOnAlert write FOnAlert;
   end;
 
 implementation
@@ -164,17 +191,26 @@ begin
   FFilteredNetwork := TNetworkConnectionList.Create(False);
   FServices := TServiceList.Create(True);
   FFilteredServices := TServiceList.Create(False);
+  FStartupItems := TStartupList.Create(True);
+  FFilteredStartup := TStartupList.Create(False);
   FSearchFilter := '';
   FNetworkSearchFilter := '';
   FServiceSearchFilter := '';
   FServiceStatusFilter := 0;
+  FStartupSearchFilter := '';
+  FStartupSortColumn := 0;
+  FStartupSortAscending := True;
   FFilterMode := fmAll;
   FTreeViewEnabled := False;
   FActiveView := avDashboard;
   FCpuHistory.Clear;
   FRamHistory.Clear;
   FDiskHistory.Clear;
+  FGpuHistory.Clear;
   FVitalityHistory.Clear;
+  FillChar(FAlertCpu, SizeOf(FAlertCpu), 0);
+  FillChar(FAlertRam, SizeOf(FAlertRam), 0);
+  FillChar(FAlertDisk, SizeOf(FAlertDisk), 0);
   FCurrentTheme := atDark;
   FThemeColors := TUIUtils.GetThemeColors(FCurrentTheme);
   FLatestMetrics := TSystemMetrics.CreateEmpty;
@@ -191,6 +227,8 @@ destructor TMainViewModel.Destroy;
 begin
   if Assigned(FMetricsService) then
     FMetricsService.StopMonitoring;
+  FFilteredStartup.Free;
+  FStartupItems.Free;
   FFilteredServices.Free;
   FServices.Free;
   FFilteredNetwork.Free;
@@ -221,6 +259,8 @@ begin
     RamPct := Single(FLatestMetrics.MemoryLoadPercent);
   FRamHistory.Add(RamPct);
   FDiskHistory.Add(FLatestMetrics.DiskUsagePercent);
+  if FLatestMetrics.Gpu.Available then
+    FGpuHistory.Add(FLatestMetrics.Gpu.EngineUsagePercent);
   FVitalityHistory.Add(100.0 - (FLatestMetrics.CpuUsagePercent * 0.15));
 
   FProcesses.Free;
@@ -307,6 +347,7 @@ begin
     case FActiveView of
       avNetwork: RefreshNetworkConnections;
       avServices: RefreshServices;
+      avStartup: RefreshStartupEntries;
     end;
   end;
 end;
@@ -341,9 +382,10 @@ begin
   else
   begin
     FSortColumn := AColumn;
-    // Numeric/severity columns (4 = CPU %, 5 = Memory, 6 = Disk I/O, 7 = Health Status, 8 = Threads)
-    // read naturally descending on first click; text/ID columns ascending
-    FSortAscending := not (AColumn in [4, 5, 6, 7, 8]);
+    // Numeric/severity columns (4 = CPU %, 5 = Memory, 6 = Disk I/O, 7 = Network I/O,
+    // 8 = Health Status, 9 = Threads) read naturally descending on first click;
+    // text/ID columns ascending
+    FSortAscending := not (AColumn in [4, 5, 6, 7, 8, 9]);
   end;
   ApplyFilter;
   if Assigned(FOnProcessesUpdated) then
@@ -529,12 +571,16 @@ begin
          if A.DiskIoKBps > B.DiskIoKBps then Result := 1
          else if A.DiskIoKBps < B.DiskIoKBps then Result := -1;
        end;
-    7: Result := StatusSeverity(A.Status) - StatusSeverity(B.Status); // Health Status
-    8: begin // Active Threads
+    7: begin // Network I/O (KB/s)
+         if A.NetIoKBps > B.NetIoKBps then Result := 1
+         else if A.NetIoKBps < B.NetIoKBps then Result := -1;
+       end;
+    8: Result := StatusSeverity(A.Status) - StatusSeverity(B.Status); // Health Status
+    9: begin // Active Threads
          if A.ThreadCount > B.ThreadCount then Result := 1
          else if A.ThreadCount < B.ThreadCount then Result := -1;
        end;
-    9: Result := CompareText(A.ImagePath, B.ImagePath); // Image Path
+    10: Result := CompareText(A.ImagePath, B.ImagePath); // Image Path
   end;
   if Result = 0 then
     Result := CompareText(A.Name, B.Name); // stable tiebreak
@@ -603,6 +649,8 @@ end;
 procedure TMainViewModel.HandleMetricsUpdate(const AMetrics: TSystemMetrics);
 var
   RamPct: Single;
+  AlertKind, AlertSeverity: Integer;
+  AlertTitle, AlertMsg: string;
 begin
   FLatestMetrics := AMetrics;
   FCpuHistory.Add(AMetrics.CpuUsagePercent);
@@ -612,7 +660,17 @@ begin
     RamPct := Single(AMetrics.MemoryLoadPercent);
   FRamHistory.Add(RamPct);
   FDiskHistory.Add(AMetrics.DiskUsagePercent);
+  if AMetrics.Gpu.Available then
+    FGpuHistory.Add(AMetrics.Gpu.EngineUsagePercent);
   FVitalityHistory.Add(100.0 - (AMetrics.CpuUsagePercent * 0.15));
+
+  // Threshold alert engine (sustained breach + cooldown + recovery)
+  if TAlertRules.Evaluate(FAlertCpu, FAlertRam, FAlertDisk, AMetrics, GetTickCount64,
+       AlertKind, AlertTitle, AlertMsg, AlertSeverity) then
+  begin
+    if Assigned(FOnAlert) then
+      FOnAlert(AlertTitle, AlertMsg, AlertSeverity);
+  end;
 
   if Assigned(FOnMetricsUpdated) then
     FOnMetricsUpdated(FLatestMetrics);
@@ -1022,6 +1080,114 @@ begin
   SortFilteredServices;
   if Assigned(FOnServicesUpdated) then
     FOnServicesUpdated(FFilteredServices);
+end;
+
+function TMainViewModel.CompareStartupItems(const A, B: TStartupItem): Integer;
+begin
+  Result := 0;
+  case FStartupSortColumn of
+    0: Result := CompareText(A.Name, B.Name);
+    1: Result := CompareText(A.Command, B.Command);
+    2: begin
+         if (not A.Enabled) and B.Enabled then Result := -1
+         else if A.Enabled and (not B.Enabled) then Result := 1;
+       end;
+    3: Result := CompareText(A.SourceToString, B.SourceToString);
+  end;
+  if Result = 0 then
+    Result := CompareText(A.Name, B.Name);
+end;
+
+procedure TMainViewModel.SortFilteredStartup;
+var
+  I, J: Integer;
+  Tmp: TStartupItem;
+  Cmp: Integer;
+begin
+  if FFilteredStartup.Count < 2 then Exit;
+  for I := 0 to FFilteredStartup.Count - 2 do
+    for J := I + 1 to FFilteredStartup.Count - 1 do
+    begin
+      Cmp := CompareStartupItems(FFilteredStartup[I], FFilteredStartup[J]);
+      if (FStartupSortAscending and (Cmp > 0)) or ((not FStartupSortAscending) and (Cmp < 0)) then
+      begin
+        Tmp := FFilteredStartup[I];
+        FFilteredStartup[I] := FFilteredStartup[J];
+        FFilteredStartup[J] := Tmp;
+      end;
+    end;
+end;
+
+procedure TMainViewModel.RefreshStartupEntries;
+begin
+  FStartupItems.Free;
+  FStartupItems := FMetricsService.CollectStartupEntries;
+  SetStartupSearchFilter(FStartupSearchFilter);
+end;
+
+procedure TMainViewModel.SetStartupSort(const AColumn: Integer);
+begin
+  if AColumn = FStartupSortColumn then
+    FStartupSortAscending := not FStartupSortAscending
+  else
+  begin
+    FStartupSortColumn := AColumn;
+    FStartupSortAscending := True;
+  end;
+  SortFilteredStartup;
+  if Assigned(FOnStartupUpdated) then
+    FOnStartupUpdated(FFilteredStartup);
+end;
+
+procedure TMainViewModel.SetStartupSearchFilter(const AFilter: string);
+var
+  I: Integer;
+  Item: TStartupItem;
+  S: string;
+begin
+  FStartupSearchFilter := LowerCase(Trim(AFilter));
+  FFilteredStartup.Clear;
+  for I := 0 to FStartupItems.Count - 1 do
+  begin
+    Item := FStartupItems[I];
+    if FStartupSearchFilter = '' then
+      FFilteredStartup.Add(Item)
+    else
+    begin
+      S := Format('%s %s %s', [LowerCase(Item.Name), LowerCase(Item.Command),
+        LowerCase(Item.SourceToString)]);
+      if Pos(FStartupSearchFilter, S) > 0 then
+        FFilteredStartup.Add(Item);
+    end;
+  end;
+  SortFilteredStartup;
+  if Assigned(FOnStartupUpdated) then
+    FOnStartupUpdated(FFilteredStartup);
+end;
+
+function TMainViewModel.SetStartupEnabled(const AItem: TStartupItem; const AEnable: Boolean): Boolean;
+begin
+  Result := False;
+  if AItem = nil then Exit;
+  if Assigned(FMetricsService) then
+  begin
+    Result := FMetricsService.SetStartupEntryEnabled(AItem, AEnable);
+    if Result then
+    begin
+      AItem.Enabled := AEnable;
+      if Assigned(FOnStartupUpdated) then
+        FOnStartupUpdated(FFilteredStartup);
+      if Assigned(FOnStatusMessage) then
+      begin
+        if AEnable then
+          FOnStatusMessage(Format('Startup entry "%s" enabled.', [AItem.Name]), False)
+        else
+          FOnStatusMessage(Format('Startup entry "%s" disabled.', [AItem.Name]), False);
+      end;
+    end
+    else if Assigned(FOnStatusMessage) then
+      FOnStatusMessage(Format('Failed to update startup entry "%s" (Administrator privileges may be required).', [AItem.Name]), True);
+  end;
 end;
 
 end.

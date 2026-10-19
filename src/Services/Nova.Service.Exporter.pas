@@ -106,7 +106,15 @@ begin
       MetricsObj.Add('usedDiskGB',          Sg(AMetrics.UsedDiskGB));
       MetricsObj.Add('freeDiskGB',          Sg(AMetrics.FreeDiskGB));
       MetricsObj.Add('diskUsagePercent',    Sg(AMetrics.DiskUsagePercent));
+      MetricsObj.Add('netDownloadKBps',     Sg(AMetrics.NetDownloadKBps));
+      MetricsObj.Add('netUploadKBps',       Sg(AMetrics.NetUploadKBps));
       MetricsObj.Add('uptimeSeconds',       Int64(AMetrics.UptimeSeconds));
+      MetricsObj.Add('gpuName',             AMetrics.Gpu.Name);
+      MetricsObj.Add('gpuEngineUsagePercent', Sg(AMetrics.Gpu.EngineUsagePercent));
+      MetricsObj.Add('gpuDedicatedTotalMB', Int64(AMetrics.Gpu.DedicatedTotalMB));
+      MetricsObj.Add('gpuDedicatedUsedMB',  Int64(AMetrics.Gpu.DedicatedUsedMB));
+      MetricsObj.Add('gpuSharedUsageMB',    Int64(AMetrics.Gpu.SharedUsageMB));
+      MetricsObj.Add('gpuAvailable',        AMetrics.Gpu.Available);
       Root.Add('systemMetrics', MetricsObj);
 
       ProcArr := TJSONArray.Create;
@@ -120,6 +128,7 @@ begin
           ProcObj.Add('memoryMB', Sg(Item.MemoryWorkingSetMB));
           ProcObj.Add('status',   TUIUtils.StatusToString(Item.Status));
           ProcObj.Add('threads',  Item.ThreadCount);
+          ProcObj.Add('networkIoKBps', Sg(Item.NetIoKBps));
           ProcArr.Add(ProcObj);
         end;
       Root.Add('processes', ProcArr);
@@ -146,10 +155,15 @@ var
   I: Integer;
   Item: TProcessItem;
   Sep: string;
+  GpuAvail: string;
 begin
   Result := False;
   Lines := TStringList.Create;
   try
+    if AMetrics.Gpu.Available then
+      GpuAvail := 'true'
+    else
+      GpuAvail := 'false';
     Lines.Add('{');
     Lines.Add('  "generator": "NovaMonitor Telemetry Suite",');
     Lines.Add(Format('  "timestamp": "%s",', [FormatDateTime('yyyy-mm-dd"T"hh:nn:ss.zzz"Z"', AMetrics.Timestamp)]));
@@ -163,7 +177,15 @@ begin
     Lines.Add(NumFmt('    "usedDiskGB": %.2f,', [AMetrics.UsedDiskGB]));
     Lines.Add(NumFmt('    "freeDiskGB": %.2f,', [AMetrics.FreeDiskGB]));
     Lines.Add(NumFmt('    "diskUsagePercent": %.2f,', [AMetrics.DiskUsagePercent]));
-    Lines.Add(Format('    "uptimeSeconds": %d', [AMetrics.UptimeSeconds]));
+    Lines.Add(NumFmt('    "netDownloadKBps": %.2f,', [AMetrics.NetDownloadKBps]));
+    Lines.Add(NumFmt('    "netUploadKBps": %.2f,', [AMetrics.NetUploadKBps]));
+    Lines.Add(Format('    "uptimeSeconds": %d,', [AMetrics.UptimeSeconds]));
+    Lines.Add(Format('    "gpuName": "%s",', [EscapeJson(AMetrics.Gpu.Name)]));
+    Lines.Add(NumFmt('    "gpuEngineUsagePercent": %.2f,', [AMetrics.Gpu.EngineUsagePercent]));
+    Lines.Add(Format('    "gpuDedicatedTotalMB": %d,', [AMetrics.Gpu.DedicatedTotalMB]));
+    Lines.Add(Format('    "gpuDedicatedUsedMB": %d,', [AMetrics.Gpu.DedicatedUsedMB]));
+    Lines.Add(Format('    "gpuSharedUsageMB": %d,', [AMetrics.Gpu.SharedUsageMB]));
+    Lines.Add(Format('    "gpuAvailable": %s', [GpuAvail]));
     Lines.Add('  },');
     Lines.Add('  "processes": [');
 
@@ -182,6 +204,7 @@ begin
         Lines.Add(Format('      "name": "%s",', [EscapeJson(Item.Name)]));
         Lines.Add(NumFmt('      "memoryMB": %.2f,', [Item.MemoryWorkingSetMB]));
         Lines.Add(Format('      "status": "%s",', [TUIUtils.StatusToString(Item.Status)]));
+        Lines.Add(NumFmt('      "networkIoKBps": %.2f,', [Item.NetIoKBps]));
         Lines.Add(Format('      "threads": %d', [Item.ThreadCount]));
         Lines.Add('    }' + Sep);
       end;
@@ -208,18 +231,19 @@ begin
   Result := False;
   Lines := TStringList.Create;
   try
-    Lines.Add('PID,ProcessName,MemoryMB,Status,Threads');
+    Lines.Add('PID,ProcessName,MemoryMB,Status,Threads,NetworkIoKBps');
     if Assigned(AProcesses) then
     begin
       for I := 0 to AProcesses.Count - 1 do
       begin
         Item := AProcesses[I];
-        Lines.Add(Format('%d,"%s",%.2f,"%s",%d', [
+        Lines.Add(Format('%d,"%s",%.2f,"%s",%d,%.2f', [
           Item.Id,
           StringReplace(Item.Name, '"', '""', [rfReplaceAll]),
           Item.MemoryWorkingSetMB,
           TUIUtils.StatusToString(Item.Status),
-          Item.ThreadCount
+          Item.ThreadCount,
+          Item.NetIoKBps
         ]));
       end;
     end;

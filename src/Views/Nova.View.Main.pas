@@ -60,6 +60,7 @@ type
     // Metrics Card Container
     pnlMetricsGrid: TPanel;
     pbCardCpu: TPaintBox;
+    pbCardGpu: TPaintBox;
     pbCardRam: TPaintBox;
     pbCardDisk: TPaintBox;
     pbCardUptime: TPaintBox;
@@ -93,6 +94,7 @@ type
 
     // Custom drawing handlers
     procedure pbCardCpuPaint(Sender: TObject);
+    procedure pbCardGpuPaint(Sender: TObject);
     procedure pbCardRamPaint(Sender: TObject);
     procedure pbCardDiskPaint(Sender: TObject);
     procedure pbCardUptimePaint(Sender: TObject);
@@ -127,6 +129,7 @@ type
     btnRunTask: TButton;
     btnNavNetwork: TButton;
     btnNavServices: TButton;
+    btnNavStartup: TButton;
 
     // Network view controls
     pnlNetworkSection: TPanel;
@@ -154,13 +157,27 @@ type
     btnSvcRestart: TButton;
     lvServices: TListView;
 
+    // Startup programs view controls
+    pnlStartupSection: TPanel;
+    pnlStartupToolbar: TPanel;
+    lblStartupTitle: TLabel;
+    lblStartupCount: TLabel;
+    pnlStartupSearchBox: TPanel;
+    edtStartupSearch: TEdit;
+    btnRefreshStartup: TButton;
+    btnStartupEnable: TButton;
+    btnStartupDisable: TButton;
+    lvStartup: TListView;
+
     function GetSelectedProcess: TProcessItem;
     function GetSelectedService: TServiceItem;
+    function GetSelectedStartup: TStartupItem;
     procedure SetupContextMenu;
     procedure SetupTableToolbarActions;
     procedure SetupProcessColumns;
     procedure SetupNetworkSection;
     procedure SetupServicesSection;
+    procedure SetupStartupSection;
     procedure UpdateFilterChipStyles;
     procedure UpdateServiceFilterStyles;
     procedure TerminateSelectedProcess;
@@ -203,15 +220,24 @@ type
     procedure btnSvcStopClick(Sender: TObject);
     procedure btnSvcRestartClick(Sender: TObject);
 
+    procedure btnNavStartupClick(Sender: TObject);
+    procedure btnStartupEnableClick(Sender: TObject);
+    procedure btnStartupDisableClick(Sender: TObject);
+    procedure edtStartupSearchChange(Sender: TObject);
+    procedure btnRefreshStartupClick(Sender: TObject);
+
     procedure OnMetricsUpdated(const AMetrics: TSystemMetrics);
     procedure OnProcessesUpdated(const AProcesses: TProcessList);
     procedure OnNetworkUpdated(const ANetwork: TNetworkConnectionList);
     procedure OnServicesUpdated(const AServices: TServiceList);
+    procedure OnStartupUpdated(const AItems: TStartupList);
     procedure OnStatusMessage(const AMessage: string; const AIsError: Boolean);
     procedure OnThemeChanged(const ATheme: TAppTheme);
+    procedure OnAlert(const ATitle, AMessage: string; const ASeverity: Integer);
 
     procedure lvNetworkData(Sender: TObject; Item: TListItem);
     procedure lvServicesData(Sender: TObject; Item: TListItem);
+    procedure lvStartupData(Sender: TObject; Item: TListItem);
     procedure edtNetworkSearchChange(Sender: TObject);
     procedure btnRefreshNetworkClick(Sender: TObject);
     procedure edtServiceSearchChange(Sender: TObject);
@@ -243,12 +269,15 @@ type
     procedure lvProcessesColumnClick(Sender: TObject; Column: TListColumn);
     procedure lvNetworkColumnClick(Sender: TObject; Column: TListColumn);
     procedure lvServicesColumnClick(Sender: TObject; Column: TListColumn);
+    procedure lvStartupColumnClick(Sender: TObject; Column: TListColumn);
     {$ELSE}
     procedure lvProcessesColumnClick(Sender: TObject; Column: TListColumn;
       var CanClick: Boolean);
     procedure lvNetworkColumnClick(Sender: TObject; Column: TListColumn;
       var CanClick: Boolean);
     procedure lvServicesColumnClick(Sender: TObject; Column: TListColumn;
+      var CanClick: Boolean);
+    procedure lvStartupColumnClick(Sender: TObject; Column: TListColumn;
       var CanClick: Boolean);
     {$ENDIF}
     procedure DrawMetricCard(const APaintBox: TPaintBox; const ATitle: string;
@@ -281,13 +310,15 @@ const
   AscArrow  = #$25B2;
   DescArrow = #$25BC;
   {$ENDIF}
-  BaseColumnCaptions: array[0..9] of string =
+  BaseColumnCaptions: array[0..10] of string =
     ('PID', 'Process Name', 'User Account', 'Arch', 'CPU %', 'Working Set (RAM)',
-     'Disk I/O', 'Health Status', 'Active Threads', 'Image Path');
+     'Disk I/O', 'Network I/O', 'Health Status', 'Active Threads', 'Image Path');
   BaseNetCaptions: array[0..5] of string =
     ('PID', 'Process Name', 'Protocol', 'Local Address:Port', 'Remote Address:Port', 'State');
   BaseSvcCaptions: array[0..4] of string =
     ('Service Name', 'Display Name', 'Status', 'PID', 'Type');
+  BaseStartupCaptions: array[0..3] of string =
+    ('Name', 'Command', 'Status', 'Source');
 
 { TMainForm }
 
@@ -318,8 +349,10 @@ begin
   FViewModel.OnProcessesUpdated := OnProcessesUpdated;
   FViewModel.OnNetworkUpdated   := OnNetworkUpdated;
   FViewModel.OnServicesUpdated  := OnServicesUpdated;
+  FViewModel.OnStartupUpdated   := OnStartupUpdated;
   FViewModel.OnStatusMessage    := OnStatusMessage;
   FViewModel.OnThemeChanged     := OnThemeChanged;
+  FViewModel.OnAlert            := OnAlert;
 
   {$IFDEF FPC}
   lvProcesses.ColumnClick := True; // LCL gates header clicks on this flag
@@ -431,14 +464,31 @@ begin
   btnNavServices.Caption := '  Windows Services';
   btnNavServices.OnClick := btnNavServicesClick;
 
-  btnNavExport.Top := 260;
-  btnNavThemeToggle.Top := 310;
+  btnNavStartup := TButton.Create(Self);
+  btnNavStartup.Parent := pnlSidebar;
+  btnNavStartup.SetBounds(12, 252, 196, 38);
+  btnNavStartup.Align := alTop;
+  btnNavStartup.BorderSpacing.Left := 12;
+  btnNavStartup.BorderSpacing.Top := 4;
+  btnNavStartup.BorderSpacing.Right := 12;
+  btnNavStartup.BorderSpacing.Bottom := 4;
+  btnNavStartup.Caption := '  Startup Programs';
+  btnNavStartup.OnClick := btnNavStartupClick;
+
+  btnNavExport.Top := 305;
+  btnNavThemeToggle.Top := 355;
 
   SetupProcessColumns;
   SetupContextMenu;
   SetupTableToolbarActions;
   SetupNetworkSection;
   SetupServicesSection;
+  SetupStartupSection;
+
+  // GPU telemetry card (dynamically created; laid out with the other cards on resize)
+  pbCardGpu := TPaintBox.Create(Self);
+  pbCardGpu.Parent := pnlMetricsGrid;
+  pbCardGpu.OnPaint := pbCardGpuPaint;
 
   pbCardCpu.Cursor := crHandPoint;
   pbCardCpu.Hint := 'Click to inspect per-logical-core CPU utilization breakdown';
@@ -565,6 +615,11 @@ begin
   Col := lvProcesses.Columns.Add;
   Col.Caption := 'Disk I/O';
   Col.Width := 85;
+  Col.Alignment := taRightJustify;
+
+  Col := lvProcesses.Columns.Add;
+  Col.Caption := 'Network I/O';
+  Col.Width := 95;
   Col.Alignment := taRightJustify;
 
   Col := lvProcesses.Columns.Add;
@@ -2053,6 +2108,8 @@ begin
     SendMessage(lvNetwork.Handle, LVM_SETEXTENDEDLISTVIEWSTYLE, LVS_EX_DOUBLEBUFFER, LVS_EX_DOUBLEBUFFER);
   if Assigned(lvServices) and lvServices.HandleAllocated then
     SendMessage(lvServices.Handle, LVM_SETEXTENDEDLISTVIEWSTYLE, LVS_EX_DOUBLEBUFFER, LVS_EX_DOUBLEBUFFER);
+  if Assigned(lvStartup) and lvStartup.HandleAllocated then
+    SendMessage(lvStartup.Handle, LVM_SETEXTENDEDLISTVIEWSTYLE, LVS_EX_DOUBLEBUFFER, LVS_EX_DOUBLEBUFFER);
 
   UpdateTitleBarTheme(FViewModel.CurrentTheme = atDark);
   SyncComboBoxHeight;
@@ -2077,16 +2134,17 @@ var
   Spacing: Integer;
 begin
   Spacing := 12;
-  AvailableWidth := pnlMetricsGrid.ClientWidth - (Spacing * 5);
-  CardWidth := AvailableWidth div 4;
-  if CardWidth < 120 then CardWidth := 120;
+  AvailableWidth := pnlMetricsGrid.ClientWidth - (Spacing * 6);
+  CardWidth := AvailableWidth div 5;
+  if CardWidth < 110 then CardWidth := 110;
   CardHeight := pnlMetricsGrid.ClientHeight - 16;
   if CardHeight < 40 then CardHeight := 100;
 
   pbCardCpu.SetBounds(Spacing, 8, CardWidth, CardHeight);
-  pbCardRam.SetBounds(Spacing * 2 + CardWidth, 8, CardWidth, CardHeight);
-  pbCardDisk.SetBounds(Spacing * 3 + CardWidth * 2, 8, CardWidth, CardHeight);
-  pbCardUptime.SetBounds(Spacing * 4 + CardWidth * 3, 8, CardWidth, CardHeight);
+  pbCardGpu.SetBounds(Spacing * 2 + CardWidth, 8, CardWidth, CardHeight);
+  pbCardRam.SetBounds(Spacing * 3 + CardWidth * 2, 8, CardWidth, CardHeight);
+  pbCardDisk.SetBounds(Spacing * 4 + CardWidth * 3, 8, CardWidth, CardHeight);
+  pbCardUptime.SetBounds(Spacing * 5 + CardWidth * 4, 8, CardWidth, CardHeight);
 
   SyncComboBoxHeight;
   StretchLastColumn;
@@ -2192,20 +2250,40 @@ begin
     lvServices.Font.Color := AColors.TextPrimary;
   end;
 
+  if Assigned(pnlStartupSection) then
+  begin
+    pnlStartupSection.Color := AColors.Surface;
+    pnlStartupToolbar.Color := AColors.Surface;
+    lblStartupTitle.Font.Color := AColors.TextPrimary;
+    lblStartupCount.Font.Color := AColors.TextSecondary;
+    if Assigned(pnlStartupSearchBox) then
+    begin
+      pnlStartupSearchBox.Color := AColors.SurfaceCard;
+      pnlStartupSearchBox.Invalidate;
+    end;
+    edtStartupSearch.Color := AColors.SurfaceCard;
+    edtStartupSearch.Font.Color := AColors.TextPrimary;
+    lvStartup.Color := AColors.Surface;
+    lvStartup.Font.Color := AColors.TextPrimary;
+  end;
+
   // Preserve nav button highlight across theme changes
   btnNavDashboard.Font.Color := AColors.SidebarText;
   btnNavProcesses.Font.Color := AColors.SidebarText;
   if Assigned(btnNavNetwork) then btnNavNetwork.Font.Color := AColors.SidebarText;
   if Assigned(btnNavServices) then btnNavServices.Font.Color := AColors.SidebarText;
+  if Assigned(btnNavStartup) then btnNavStartup.Font.Color := AColors.SidebarText;
 
   case FActiveView of
     avDashboard: btnNavDashboard.Font.Color := AColors.Accent;
     avInspector: btnNavProcesses.Font.Color := AColors.Accent;
     avNetwork: if Assigned(btnNavNetwork) then btnNavNetwork.Font.Color := AColors.Accent;
     avServices: if Assigned(btnNavServices) then btnNavServices.Font.Color := AColors.Accent;
+    avStartup: if Assigned(btnNavStartup) then btnNavStartup.Font.Color := AColors.Accent;
   end;
 
   pbCardCpu.Invalidate;
+  if Assigned(pbCardGpu) then pbCardGpu.Invalidate;
   pbCardRam.Invalidate;
   pbCardDisk.Invalidate;
   pbCardUptime.Invalidate;
@@ -2217,6 +2295,7 @@ end;
 procedure TMainForm.OnMetricsUpdated(const AMetrics: TSystemMetrics);
 begin
   pbCardCpu.Invalidate;
+  if Assigned(pbCardGpu) then pbCardGpu.Invalidate;
   pbCardRam.Invalidate;
   pbCardDisk.Invalidate;
   pbCardUptime.Invalidate;
@@ -2291,6 +2370,7 @@ begin
   Item.SubItems.Add(TUIUtils.FormatPercent(ProcItem.CpuSharePercent));
   Item.SubItems.Add(TUIUtils.FormatMegabytes(ProcItem.MemoryWorkingSetMB));
   Item.SubItems.Add(TUIUtils.FormatRateKBps(ProcItem.DiskIoKBps));
+  Item.SubItems.Add(TUIUtils.FormatRateKBps(ProcItem.NetIoKBps));
   Item.SubItems.Add(TUIUtils.StatusToString(ProcItem.Status));
   Item.SubItems.Add(IntToStr(ProcItem.ThreadCount));
   Item.SubItems.Add(ProcItem.ImagePath);
@@ -2373,9 +2453,10 @@ var
   ProcItem: TProcessItem;
 begin
   if (Item = nil) or (Item.Index < 0) or (Item.Index >= FViewModel.FilteredProcesses.Count) then Exit;
-  // SubItem comes 1-based from the Win32 notification: 7 = "Health Status"
-  // (0 = PID caption, 1 = name, 2 = user, 3 = arch, 4 = CPU, 5 = RAM, 6 = Disk I/O, 7 = status)
-  if SubItem = 7 then
+  // SubItem comes 1-based from the Win32 notification: 9 = "Health Status"
+  // (0 = PID caption, 1 = name, 2 = user, 3 = arch, 4 = CPU, 5 = RAM,
+  //  6 = Disk I/O, 7 = Network I/O, 8 = status -> SubItem 9)
+  if SubItem = 9 then
   begin
     ProcItem := FViewModel.FilteredProcesses[Item.Index];
     Sender.Canvas.Font.Color := TUIUtils.StatusToColor(ProcItem.Status, FColors);
@@ -2411,6 +2492,42 @@ begin
     TUIUtils.FormatPercent(M.CpuUsagePercent),
     SubCaption,
     M.CpuUsagePercent, BarColor, FViewModel.CpuHistory.ToArray);
+end;
+
+procedure TMainForm.pbCardGpuPaint(Sender: TObject);
+var
+  M: TSystemMetrics;
+  G: TGpuInfo;
+  BarColor: TColor;
+  PrimaryVal, SubCaption: string;
+begin
+  M := FViewModel.LatestMetrics;
+  G := M.Gpu;
+
+  if not G.Available then
+  begin
+    DrawMetricCard(pbCardGpu, 'GPU UTILIZATION', '—',
+      'No WDDM adapter detected', -1.0, FColors.TextSecondary);
+    Exit;
+  end;
+
+  if G.EngineUsagePercent > 80.0 then
+    BarColor := FColors.Danger
+  else if G.EngineUsagePercent > 50.0 then
+    BarColor := FColors.Warning
+  else
+    BarColor := FColors.Accent;
+
+  PrimaryVal := TUIUtils.FormatPercent(G.EngineUsagePercent);
+  SubCaption := Format('%s used of %s VRAM', [
+    TUIUtils.FormatMegabytes(G.DedicatedUsedMB),
+    TUIUtils.FormatMegabytes(G.DedicatedTotalMB)]);
+  if G.SharedUsageMB > 0 then
+    SubCaption := SubCaption + Format(' · %s shared', [TUIUtils.FormatMegabytes(G.SharedUsageMB)]);
+
+  DrawMetricCard(pbCardGpu, 'GPU UTILIZATION', PrimaryVal,
+    Copy(G.Name, 1, 42) + ' · ' + SubCaption,
+    G.EngineUsagePercent, BarColor, FViewModel.GpuHistory.ToArray);
 end;
 
 procedure TMainForm.pbCardRamPaint(Sender: TObject);
@@ -2537,6 +2654,23 @@ begin
         lvServices.Columns[I].Caption := BaseSvcCaptions[I];
     end;
   end;
+
+  if Assigned(lvStartup) then
+  begin
+    for I := 0 to lvStartup.Columns.Count - 1 do
+    begin
+      if I > High(BaseStartupCaptions) then Break;
+      if I = FViewModel.StartupSortColumn then
+      begin
+        if FViewModel.StartupSortAscending then
+          lvStartup.Columns[I].Caption := BaseStartupCaptions[I] + ' ' + AscArrow
+        else
+          lvStartup.Columns[I].Caption := BaseStartupCaptions[I] + ' ' + DescArrow;
+      end
+      else
+        lvStartup.Columns[I].Caption := BaseStartupCaptions[I];
+    end;
+  end;
 end;
 
 {$IFDEF FPC}
@@ -2563,6 +2697,12 @@ end;
 procedure TMainForm.lvServicesColumnClick(Sender: TObject; Column: TListColumn);
 begin
   FViewModel.SetServiceSort(Column.Index);
+  UpdateSortIndicators;
+end;
+
+procedure TMainForm.lvStartupColumnClick(Sender: TObject; Column: TListColumn);
+begin
+  FViewModel.SetStartupSort(Column.Index);
   UpdateSortIndicators;
 end;
 {$ELSE}
@@ -2593,6 +2733,13 @@ begin
   FViewModel.SetServiceSort(Column.Index);
   UpdateSortIndicators;
 end;
+
+procedure TMainForm.lvStartupColumnClick(Sender: TObject; Column: TListColumn;
+  var CanClick: Boolean);
+begin
+  FViewModel.SetStartupSort(Column.Index);
+  UpdateSortIndicators;
+end;
 {$ENDIF}
 
 procedure TMainForm.SwitchView(const AView: TAppView);
@@ -2602,6 +2749,8 @@ begin
   pnlProcessSection.Visible := (AView in [avDashboard, avInspector]);
   pnlNetworkSection.Visible := (AView = avNetwork);
   pnlServicesSection.Visible := (AView = avServices);
+  if Assigned(pnlStartupSection) then
+    pnlStartupSection.Visible := (AView = avStartup);
 
   case AView of
     avDashboard:
@@ -2627,6 +2776,13 @@ begin
       lblFooterStatus.Caption := 'Services view - Win32 system services';
       edtServiceSearch.SetFocus;
     end;
+    avStartup:
+    begin
+      lblPageTitle.Caption := 'Startup Programs';
+      lblFooterStatus.Caption := 'Startup view - autostart registry entries and Startup folders';
+      if Assigned(edtStartupSearch) then
+        edtStartupSearch.SetFocus;
+    end;
   end;
   lblFooterStatus.Font.Color := FColors.TextSecondary;
 
@@ -2635,12 +2791,14 @@ begin
   btnNavProcesses.Font.Color := FColors.SidebarText;
   if Assigned(btnNavNetwork) then btnNavNetwork.Font.Color := FColors.SidebarText;
   if Assigned(btnNavServices) then btnNavServices.Font.Color := FColors.SidebarText;
+  if Assigned(btnNavStartup) then btnNavStartup.Font.Color := FColors.SidebarText;
 
   case AView of
     avDashboard: btnNavDashboard.Font.Color := FColors.Accent;
     avInspector: btnNavProcesses.Font.Color := FColors.Accent;
     avNetwork: if Assigned(btnNavNetwork) then btnNavNetwork.Font.Color := FColors.Accent;
     avServices: if Assigned(btnNavServices) then btnNavServices.Font.Color := FColors.Accent;
+    avStartup: if Assigned(btnNavStartup) then btnNavStartup.Font.Color := FColors.Accent;
   end;
 
   FViewModel.SetActiveView(AView);
@@ -2804,6 +2962,242 @@ begin
   FViewModel.SetServiceStatusFilter(2);
 end;
 
+procedure TMainForm.SetupStartupSection;
+var
+  Col: TListColumn;
+  StartupMenuItem: TMenuItem;
+  FStartupContextMenu: TPopupMenu;
+begin
+  pnlStartupSection := TPanel.Create(Self);
+  pnlStartupSection.Parent := pnlContent;
+  pnlStartupSection.Align := alClient;
+  pnlStartupSection.BevelOuter := bvNone;
+  pnlStartupSection.Visible := False;
+
+  pnlStartupToolbar := TPanel.Create(Self);
+  pnlStartupToolbar.Parent := pnlStartupSection;
+  pnlStartupToolbar.Align := alTop;
+  pnlStartupToolbar.Height := 40;
+  pnlStartupToolbar.BevelOuter := bvNone;
+
+  lblStartupTitle := TLabel.Create(Self);
+  lblStartupTitle.Parent := pnlStartupToolbar;
+  lblStartupTitle.SetBounds(16, 10, 150, 20);
+  lblStartupTitle.Caption := 'Startup Programs';
+  lblStartupTitle.Font.Style := [fsBold];
+
+  pnlStartupSearchBox := TPanel.Create(Self);
+  pnlStartupSearchBox.Parent := pnlStartupToolbar;
+  pnlStartupSearchBox.BevelOuter := bvNone;
+  pnlStartupSearchBox.DoubleBuffered := True;
+  pnlStartupSearchBox.SetBounds(175, 7, 200, 26);
+  pnlStartupSearchBox.Cursor := crIBeam;
+  pnlStartupSearchBox.OnPaint := SearchBoxPaint;
+  pnlStartupSearchBox.OnClick := SearchBoxClick;
+
+  edtStartupSearch := TEdit.Create(Self);
+  edtStartupSearch.Parent := pnlStartupSearchBox;
+  edtStartupSearch.BorderStyle := bsNone;
+  edtStartupSearch.AutoSize := False;
+  edtStartupSearch.Font.Name := 'Segoe UI';
+  edtStartupSearch.Font.Size := 9;
+  edtStartupSearch.SetBounds(10, 5, 182, 16);
+  edtStartupSearch.TextHint := 'Search startup entries...';
+  edtStartupSearch.OnChange := edtStartupSearchChange;
+  edtStartupSearch.OnEnter := SearchEditFocusChange;
+  edtStartupSearch.OnExit := SearchEditFocusChange;
+
+  btnRefreshStartup := TButton.Create(Self);
+  btnRefreshStartup.Parent := pnlStartupToolbar;
+  btnRefreshStartup.SetBounds(385, 7, 75, 26);
+  btnRefreshStartup.Caption := 'Refresh';
+  btnRefreshStartup.Hint := 'Re-enumerate startup registry keys and Startup folders';
+  btnRefreshStartup.ShowHint := True;
+  btnRefreshStartup.OnClick := btnRefreshStartupClick;
+
+  btnStartupEnable := TButton.Create(Self);
+  btnStartupEnable.Parent := pnlStartupToolbar;
+  btnStartupEnable.SetBounds(468, 7, 68, 26);
+  btnStartupEnable.Caption := 'Enable';
+  btnStartupEnable.Hint := 'Enable the selected startup entry (Explorer StartupApproved)';
+  btnStartupEnable.ShowHint := True;
+  btnStartupEnable.OnClick := btnStartupEnableClick;
+
+  btnStartupDisable := TButton.Create(Self);
+  btnStartupDisable.Parent := pnlStartupToolbar;
+  btnStartupDisable.SetBounds(540, 7, 72, 26);
+  btnStartupDisable.Caption := 'Disable';
+  btnStartupDisable.Hint := 'Disable the selected startup entry (Explorer StartupApproved)';
+  btnStartupDisable.ShowHint := True;
+  btnStartupDisable.OnClick := btnStartupDisableClick;
+
+  lblStartupCount := TLabel.Create(Self);
+  lblStartupCount.Parent := pnlStartupToolbar;
+  lblStartupCount.SetBounds(624, 12, 200, 20);
+  lblStartupCount.Caption := '0 entries';
+
+  lvStartup := TListView.Create(Self);
+  lvStartup.Parent := pnlStartupSection;
+  lvStartup.Align := alClient;
+  lvStartup.DoubleBuffered := True;
+  lvStartup.ViewStyle := vsReport;
+  lvStartup.GridLines := True;
+  lvStartup.RowSelect := True;
+  lvStartup.ReadOnly := True;
+  lvStartup.OwnerData := True;
+  lvStartup.BorderStyle := bsNone;
+  lvStartup.OnData := lvStartupData;
+  {$IFDEF FPC}
+  lvStartup.ColumnClick := True;
+  {$ENDIF}
+  lvStartup.OnColumnClick := lvStartupColumnClick;
+
+  FStartupContextMenu := TPopupMenu.Create(Self);
+  StartupMenuItem := TMenuItem.Create(FStartupContextMenu);
+  StartupMenuItem.Caption := 'Enable Startup Entry';
+  StartupMenuItem.OnClick := btnStartupEnableClick;
+  FStartupContextMenu.Items.Add(StartupMenuItem);
+
+  StartupMenuItem := TMenuItem.Create(FStartupContextMenu);
+  StartupMenuItem.Caption := 'Disable Startup Entry';
+  StartupMenuItem.OnClick := btnStartupDisableClick;
+  FStartupContextMenu.Items.Add(StartupMenuItem);
+
+  StartupMenuItem := TMenuItem.Create(FStartupContextMenu);
+  StartupMenuItem.Caption := '-';
+  FStartupContextMenu.Items.Add(StartupMenuItem);
+
+  StartupMenuItem := TMenuItem.Create(FStartupContextMenu);
+  StartupMenuItem.Caption := 'Refresh Startup Entries';
+  StartupMenuItem.OnClick := btnRefreshStartupClick;
+  FStartupContextMenu.Items.Add(StartupMenuItem);
+
+  lvStartup.PopupMenu := FStartupContextMenu;
+
+  Col := lvStartup.Columns.Add;
+  Col.Caption := 'Name';
+  Col.Width := 200;
+
+  Col := lvStartup.Columns.Add;
+  Col.Caption := 'Command';
+  Col.Width := 420;
+
+  Col := lvStartup.Columns.Add;
+  Col.Caption := 'Status';
+  Col.Width := 90;
+
+  Col := lvStartup.Columns.Add;
+  Col.Caption := 'Source';
+  Col.Width := 150;
+end;
+
+function TMainForm.GetSelectedStartup: TStartupItem;
+begin
+  Result := nil;
+  if Assigned(lvStartup) and Assigned(lvStartup.Selected) and
+     (lvStartup.Selected.Index >= 0) and
+     (lvStartup.Selected.Index < FViewModel.StartupItems.Count) then
+  begin
+    Result := FViewModel.StartupItems[lvStartup.Selected.Index];
+  end;
+end;
+
+procedure TMainForm.btnNavStartupClick(Sender: TObject);
+begin
+  SwitchView(avStartup);
+end;
+
+procedure TMainForm.btnStartupEnableClick(Sender: TObject);
+var
+  Entry: TStartupItem;
+begin
+  Entry := GetSelectedStartup;
+  if Entry = nil then
+  begin
+    lblFooterStatus.Caption := 'Select a startup entry from the table first';
+    lblFooterStatus.Font.Color := FColors.Warning;
+    Exit;
+  end;
+  FViewModel.SetStartupEnabled(Entry, True);
+end;
+
+procedure TMainForm.btnStartupDisableClick(Sender: TObject);
+var
+  Entry: TStartupItem;
+begin
+  Entry := GetSelectedStartup;
+  if Entry = nil then
+  begin
+    lblFooterStatus.Caption := 'Select a startup entry from the table first';
+    lblFooterStatus.Font.Color := FColors.Warning;
+    Exit;
+  end;
+  FViewModel.SetStartupEnabled(Entry, False);
+end;
+
+procedure TMainForm.btnRefreshStartupClick(Sender: TObject);
+begin
+  FViewModel.RefreshStartupEntries;
+end;
+
+procedure TMainForm.edtStartupSearchChange(Sender: TObject);
+begin
+  FViewModel.SetStartupSearchFilter(edtStartupSearch.Text);
+end;
+
+procedure TMainForm.OnStartupUpdated(const AItems: TStartupList);
+begin
+  if not Assigned(lvStartup) then Exit;
+  lvStartup.Items.BeginUpdate;
+  try
+    lvStartup.Items.Count := AItems.Count;
+    lblStartupCount.Caption := Format('%d entries', [AItems.Count]);
+  finally
+    lvStartup.Items.EndUpdate;
+  end;
+end;
+
+procedure TMainForm.lvStartupData(Sender: TObject; Item: TListItem);
+var
+  Entry: TStartupItem;
+begin
+  if Item = nil then Exit;
+  if (Item.Index < 0) or (Item.Index >= FViewModel.StartupItems.Count) then Exit;
+  Entry := FViewModel.StartupItems[Item.Index];
+  Item.Caption := Entry.Name;
+  Item.SubItems.Clear;
+  Item.SubItems.Add(Entry.Command);
+  if Entry.Enabled then
+    Item.SubItems.Add('Enabled')
+  else
+    Item.SubItems.Add('Disabled');
+  Item.SubItems.Add(Entry.SourceToString);
+end;
+
+procedure TMainForm.OnAlert(const ATitle, AMessage: string; const ASeverity: Integer);
+begin
+  lblFooterStatus.Caption := ATitle + ' — ' + AMessage;
+  if ASeverity >= 2 then
+    lblFooterStatus.Font.Color := FColors.Danger
+  else if ASeverity = 1 then
+    lblFooterStatus.Font.Color := FColors.Warning
+  else
+    lblFooterStatus.Font.Color := FColors.Success;
+
+  if Assigned(FTrayIcon) then
+  begin
+    // LCL 4.x and VCL share the property-based balloon API
+    FTrayIcon.BalloonTitle := ATitle;
+    FTrayIcon.BalloonHint := AMessage;
+    FTrayIcon.BalloonTimeout := 6000;
+    if ASeverity >= 2 then
+      FTrayIcon.BalloonFlags := bfWarning
+    else
+      FTrayIcon.BalloonFlags := bfInfo;
+    FTrayIcon.ShowBalloonHint;
+  end;
+end;
+
 procedure TMainForm.cmbIntervalChange(Sender: TObject);
 var
   IntervalMs: Cardinal;
@@ -2912,7 +3306,8 @@ begin
 
   IsActive := ((Pnl = pnlSearchBox) and Assigned(edtSearch) and edtSearch.Focused) or
               ((Pnl = pnlNetSearchBox) and Assigned(edtNetworkSearch) and edtNetworkSearch.Focused) or
-              ((Pnl = pnlSvcSearchBox) and Assigned(edtServiceSearch) and edtServiceSearch.Focused);
+              ((Pnl = pnlSvcSearchBox) and Assigned(edtServiceSearch) and edtServiceSearch.Focused) or
+              ((Pnl = pnlStartupSearchBox) and Assigned(edtStartupSearch) and edtStartupSearch.Focused);
 
   C.Brush.Style := bsSolid;
   C.Brush.Color := FColors.SurfaceCard;
@@ -2932,7 +3327,9 @@ begin
   else if (Sender = pnlNetSearchBox) and Assigned(edtNetworkSearch) then
     edtNetworkSearch.SetFocus
   else if (Sender = pnlSvcSearchBox) and Assigned(edtServiceSearch) then
-    edtServiceSearch.SetFocus;
+    edtServiceSearch.SetFocus
+  else if (Sender = pnlStartupSearchBox) and Assigned(edtStartupSearch) then
+    edtStartupSearch.SetFocus;
 end;
 
 procedure TMainForm.SearchEditFocusChange(Sender: TObject);
@@ -2942,7 +3339,9 @@ begin
   else if (Sender = edtNetworkSearch) and Assigned(pnlNetSearchBox) then
     pnlNetSearchBox.Invalidate
   else if (Sender = edtServiceSearch) and Assigned(pnlSvcSearchBox) then
-    pnlSvcSearchBox.Invalidate;
+    pnlSvcSearchBox.Invalidate
+  else if (Sender = edtStartupSearch) and Assigned(pnlStartupSearchBox) then
+    pnlStartupSearchBox.Invalidate;
 end;
 
 procedure TMainForm.lblTrayClick(Sender: TObject);

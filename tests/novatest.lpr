@@ -33,7 +33,7 @@ end;
 var
   Svc: IMetricsService;
   Exp: IExportService;
-  Snap: TSystemMetrics;
+  Snap, Snap2: TSystemMetrics;
   Procs: TProcessList;
   OutDir: string;
   Strs: TStringList;
@@ -51,10 +51,17 @@ var
   BlendedCol: TColor;
   NetList: TNetworkConnectionList;
   SvcList: TServiceList;
+  StartList: TStartupList;
+  EmptyItem: TStartupItem;
   TestBmp: TBitmap;
   HasTcp, HasLocalPort, HasRunning, HasChildLevel, HasImagePath, HasUser: Boolean;
-  HasCmdLine, HasHandles, HasPublisher: Boolean;
+  HasCmdLine, HasHandles, HasPublisher, HasEnabled, AllNamed, AllNetOk: Boolean;
   ProcMask, SysMask: NativeUInt;
+  AlertCpu, AlertRam, AlertDisk: TAlertChannelState;
+  AlertKind, AlertSeverity: Integer;
+  AlertTitle, AlertMsg: string;
+  AlertM: TSystemMetrics;
+  AlertNow: UInt64;
 begin
   OutDir := ExtractFilePath(ParamStr(0));
   try
@@ -154,6 +161,20 @@ begin
     Check('snapshot: net download >= 0', Snap.NetDownloadKBps >= 0);
     Check('snapshot: net upload >= 0', Snap.NetUploadKBps >= 0);
 
+    // --- GPU telemetry (DXGI adapters + PDH engine/memory counters) ---
+    WriteLn('Testing GPU Telemetry...');
+    Check('gpu: adapters enumerated via dxgi.dll', Snap.Gpu.AdapterCount >= 1);
+    Check('gpu: engine usage in [0..100]',
+      (Snap.Gpu.EngineUsagePercent >= 0) and (Snap.Gpu.EngineUsagePercent <= 100));
+    Check('gpu: adapter name present when telemetry available',
+      (not Snap.Gpu.Available) or (Snap.Gpu.Name <> ''));
+    Check('gpu: dedicated usage non-negative', Snap.Gpu.DedicatedUsedMB >= 0);
+    Check('gpu: shared usage non-negative', Snap.Gpu.SharedUsageMB >= 0);
+    // A second collect gives PDH the delta sample it needs for utilization
+    Snap2 := Svc.CollectSnapshot;
+    Check('gpu: second snapshot keeps utilization in [0..100]',
+      (Snap2.Gpu.EngineUsagePercent >= 0) and (Snap2.Gpu.EngineUsagePercent <= 100));
+
     // --- process enumeration (first scan = CPU baseline, shares all 0) ---
     Procs := Svc.CollectProcesses;
     try
@@ -183,6 +204,13 @@ begin
           HasCpu := True;
       Check('processes: non-zero CPU shares after repeated scans', HasCpu);
 
+      // --- per-process network rates (TCP estats deltas) ---
+      AllNetOk := True;
+      for I := 0 to Procs.Count - 1 do
+        if Procs[I].NetIoKBps < 0 then
+          AllNetOk := False;
+      Check('processes: per-process network rates all >= 0', AllNetOk);
+
       // --- exports ---
       Check('export: JSON succeeds', Exp.ExportToJson(Snap, Procs, OutDir + 'nova_test_out.json'));
       Check('export: CSV succeeds', Exp.ExportToCsv(Procs, OutDir + 'nova_test_out.csv'));
@@ -202,6 +230,8 @@ begin
             (TJSONFloatNumber(CpuNode).AsFloat >= 0) and
             (TJSONFloatNumber(CpuNode).AsFloat <= 100));
           Check('json: uptimeSeconds > 0', Assigned(Root.FindPath('systemMetrics.uptimeSeconds')));
+          Check('json: gpu telemetry present', Assigned(Root.FindPath('systemMetrics.gpuName')) and
+            Assigned(Root.FindPath('systemMetrics.gpuEngineUsagePercent')));
           ProcArrNode := Root.FindPath('processes');
           ProcArr := ProcArrNode as TJSONArray;
           Check('json: process array matches count', Assigned(ProcArr) and
@@ -209,6 +239,8 @@ begin
           if Assigned(ProcArr) and (ProcArr.Count > 0) then
             Check('json: first process has name and memory', Assigned(ProcArr.Objects[0].FindPath('name')) and
               Assigned(ProcArr.Objects[0].FindPath('memoryMB')));
+          if Assigned(ProcArr) and (ProcArr.Count > 0) then
+            Check('json: first process has networkIoKBps', Assigned(ProcArr.Objects[0].FindPath('networkIoKBps')));
         finally
           Json.Free;
         end;
@@ -221,7 +253,7 @@ begin
       try
         Strs.LoadFromFile(OutDir + 'nova_test_out.csv');
         Check('csv: header row', (Strs.Count > 0) and
-          (Strs[0] = 'PID,ProcessName,MemoryMB,Status,Threads'));
+          (Strs[0] = 'PID,ProcessName,MemoryMB,Status,Threads,NetworkIoKBps'));
         Check('csv: row count matches process count', Strs.Count = Procs.Count + 1);
         Check('csv: first data row is top-memory process',
           (Strs.Count > 1) and (Pos(IntToStr(Procs[0].Id) + ',', Strs[1]) = 1));
@@ -278,6 +310,10 @@ begin
         Check('vm: sort by Disk I/O desc',
           (VM.FilteredProcesses.Count < 2) or
           (VM.FilteredProcesses[0].DiskIoKBps >= VM.FilteredProcesses[VM.FilteredProcesses.Count - 1].DiskIoKBps));
+        VM.SetSort(7); // Sort by Network I/O desc
+        Check('vm: sort by Network I/O desc',
+          (VM.FilteredProcesses.Count < 2) or
+          (VM.FilteredProcesses[0].NetIoKBps >= VM.FilteredProcesses[VM.FilteredProcesses.Count - 1].NetIoKBps));
         VM.SetSort(7); // Sort by Health Status desc
         Check('vm: sort by Health Status', VM.FilteredProcesses.Count > 0);
         VM.SetSort(8); // Sort by Active Threads desc
@@ -398,11 +434,91 @@ begin
         VM.SetServiceStatusFilter(1); // Running
         Check('vm: services running filter applied', VM.Services.Count > 0);
 
+        // Startup ViewModel integration
+        VM.SetActiveView(avStartup);
+        Check('vm: startup view populated', VM.StartupItems.Count > 0);
+        VM.SetStartupSearchFilter('a');
+        Check('vm: startup search filter applies', VM.StartupItems.Count > 0);
+        VM.SetStartupSearchFilter('');
+
         Check('vm: default interval is 1500ms', VM.PollingIntervalMs = 1500);
         VM.SetPollingInterval(500);
         Check('vm: set interval to 500ms', VM.PollingIntervalMs = 500);
       finally
         VM.Free;
+      end;
+    end;
+
+    // --- Threshold alert rules (pure logic) ---
+    WriteLn('Testing Threshold Alert Rules...');
+    begin
+      FillChar(AlertCpu, SizeOf(AlertCpu), 0);
+      FillChar(AlertRam, SizeOf(AlertRam), 0);
+      FillChar(AlertDisk, SizeOf(AlertDisk), 0);
+      AlertM := TSystemMetrics.CreateEmpty;
+      AlertM.CpuUsagePercent := 40.0;
+
+      AlertNow := 1000;
+      Check('alerts: no alert below threshold',
+        not TAlertRules.Evaluate(AlertCpu, AlertRam, AlertDisk, AlertM, AlertNow,
+          AlertKind, AlertTitle, AlertMsg, AlertSeverity));
+
+      AlertM.CpuUsagePercent := 95.0;
+      // Feed SUSTAIN-2 breached samples first; the next two checks then exercise
+      // the third (still below sustain) and fourth (raises) sample of the streak
+      for I := 1 to TAlertRules.SUSTAIN_SAMPLES - 2 do
+        TAlertRules.Evaluate(AlertCpu, AlertRam, AlertDisk, AlertM, AlertNow + I * 10,
+          AlertKind, AlertTitle, AlertMsg, AlertSeverity);
+      Check('alerts: sustained streak required before raising',
+        not TAlertRules.Evaluate(AlertCpu, AlertRam, AlertDisk, AlertM, AlertNow + 100,
+          AlertKind, AlertTitle, AlertMsg, AlertSeverity));
+      Check('alerts: CPU alert raises at sustained breach',
+        TAlertRules.Evaluate(AlertCpu, AlertRam, AlertDisk, AlertM, AlertNow + 200,
+          AlertKind, AlertTitle, AlertMsg, AlertSeverity) and
+        (AlertKind = TAlertRules.KIND_CPU) and (AlertSeverity = 2));
+      Check('alerts: cooldown suppresses immediate re-alert',
+        not TAlertRules.Evaluate(AlertCpu, AlertRam, AlertDisk, AlertM, AlertNow + 300,
+          AlertKind, AlertTitle, AlertMsg, AlertSeverity));
+      Check('alerts: re-alert allowed after cooldown window',
+        TAlertRules.Evaluate(AlertCpu, AlertRam, AlertDisk, AlertM,
+          AlertNow + 200 + TAlertRules.COOLDOWN_MS + 1,
+          AlertKind, AlertTitle, AlertMsg, AlertSeverity));
+      AlertM.CpuUsagePercent := 50.0;
+      Check('alerts: recovery fires info alert',
+        TAlertRules.Evaluate(AlertCpu, AlertRam, AlertDisk, AlertM, AlertNow + 9999,
+          AlertKind, AlertTitle, AlertMsg, AlertSeverity) and
+        (AlertKind = TAlertRules.KIND_CPU) and (AlertSeverity = 0));
+      Check('alerts: no duplicate recovery',
+        not TAlertRules.Evaluate(AlertCpu, AlertRam, AlertDisk, AlertM, AlertNow + 10000,
+          AlertKind, AlertTitle, AlertMsg, AlertSeverity));
+    end;
+
+    // --- Startup programs collection ---
+    WriteLn('Testing Startup Programs Collection...');
+    begin
+      StartList := Svc.CollectStartupEntries;
+      try
+        Check('startup: entries collected', StartList.Count > 0);
+        HasEnabled := False;
+        AllNamed := True;
+        for I := 0 to StartList.Count - 1 do
+        begin
+          if StartList[I].Enabled then
+            HasEnabled := True;
+          if (StartList[I].Name = '') or (StartList[I].Command = '') then
+            AllNamed := False;
+        end;
+        Check('startup: contains enabled entries', HasEnabled);
+        Check('startup: all entries have names and commands', AllNamed);
+      finally
+        StartList.Free;
+      end;
+      Check('startup: nil item guarded', not Svc.SetStartupEntryEnabled(nil, False));
+      EmptyItem := TStartupItem.Create('', '', suHkcuRun, True);
+      try
+        Check('startup: empty name guarded', not Svc.SetStartupEntryEnabled(EmptyItem, False));
+      finally
+        EmptyItem.Free;
       end;
     end;
   except
