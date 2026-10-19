@@ -122,124 +122,74 @@ To make it easy to see everything NovaMonitor provides at a glance, features are
 
 NovaMonitor is structured around a strict **Model-View-ViewModel (MVVM)** architecture. The View layer contains zero Win32 telemetry gathering code and communicates exclusively with `TMainViewModel` through strongly-typed events and commands.
 
-### Component Architecture (`flowchart LR`)
+### 1. High-Level MVVM Data Flow
 
 ```mermaid
 flowchart LR
-    subgraph WinOS["Windows OS Kernel & Subsystems"]
-        NT["ntdll.dll\nNtQuerySystemInformation (Class 5 & 8)\nNtQueryInformationProcess (Class 60)\nNtSuspend / NtResume"]
-        K32["kernel32.dll / psapi.dll / user32.dll\nAffinityMask / GetGuiResources\nToolhelp32 / EnumProcessModules"]
-        VER["version.dll / shell32.dll\nFileVersionInfo / CompanyName\nShellExecuteExW (runas)"]
-        IPH["iphlpapi.dll\nGetExtendedTcp/UdpTable\nGetIfTable Bandwidth"]
-        ADV["advapi32.dll\nEnumServicesStatusExW\nStart / ControlService"]
-    end
-
-    subgraph Services["Service Layer (src/Services)"]
-        MS["TMetricsService\n+ TMetricsWorkerThread"]
-        ES["TExportService\nJSON / CSV Serializer"]
-    end
-
-    subgraph VM["ViewModel Layer (src/ViewModels)"]
-        MVM["TMainViewModel\nState, 10-Col QuickSort,\nTree Builder, Filters"]
-        HB["THistoryBuffer\n30-Sample Ring Buffers"]
-    end
-
-    subgraph View["Presentation Layer (src/Views)"]
-        MF["TMainForm\nVirtual ListViews (OwnerData)\nInspector, Affinity & Run Modals"]
-        GDI["TUIUtils (GDI+ Engine)\nAnti-Aliased Cards & Sparklines"]
-    end
-
-    NT --> MS
-    K32 --> MS
-    VER --> MS
-    IPH --> MS
-    ADV --> MS
-    MS -->|"TThread.Queue (Async)"| MVM
-    ES --> MVM
-    MVM --> HB
-    MVM -->|"Events & Virtual Data"| MF
-    GDI --> MF
+    OS["Windows Kernel & APIs"] -->|"Syscalls"| SVC["Service Layer\n(TMetricsService)"]
+    SVC -->|"TThread.Queue"| VM["ViewModel Layer\n(TMainViewModel)"]
+    VM -->|"Events & OwnerData"| UI["Presentation Layer\n(TMainForm + GDI+)"]
 ```
 
-### Asynchronous Telemetry Pipeline (`sequenceDiagram`)
+### 2. Native Win32 & NT Kernel Telemetry Subsystems
+
+```mermaid
+flowchart TD
+    NT["ntdll.dll\nSystemProcessInformation (5)\nProcessorPerfInfo (8)\nProcessCommandLine (60)"] --> MS["TMetricsService"]
+    K32["kernel32 / user32 / psapi\nAffinityMask · GetGuiResources\nEnumProcessModules"] --> MS
+    VER["version / shell32\nFileVersionInfo\nShellExecuteExW (runas)"] --> MS
+    NET["iphlpapi / advapi32\nExtendedTcp/UdpTable · GetIfTable\nEnumServicesStatusExW"] --> MS
+```
+
+### 3. Asynchronous Polling & Render Pipeline
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant WT as TMetricsWorkerThread
-    participant MS as TMetricsService (Win32/NTAPI)
+    participant WT as WorkerThread
+    participant MS as TMetricsService
     participant VM as TMainViewModel
-    participant UI as TMainForm (Main GUI Thread)
+    participant UI as TMainForm (GUI)
 
-    loop Every Polling Interval (0.5s - 5.0s)
-        WT->>MS: CollectSnapshot() (Total & Per-Core CPU, RAM, Disk, Net KB/s)
-        WT->>MS: CollectProcesses() (NtQuerySystemInformation + GDI/USER + Cache)
-        MS-->>WT: New TSystemMetrics & TProcessList
-        WT->>VM: TThread.Queue -> HandleMetricsUpdate & HandleProcessesUpdate
-        VM->>VM: Atomic pointer swap, ApplyFilter(), 10-Column QuickSort()
-        VM->>UI: OnMetricsUpdated & OnProcessesUpdated
-        UI->>UI: Invalidate GDI+ Cards & Virtual ListView (LVS_EX_DOUBLEBUFFER)
+    loop Every 0.5s – 5.0s
+        WT->>MS: CollectSnapshot() & CollectProcesses()
+        MS-->>WT: TSystemMetrics + TProcessList
+        WT->>VM: TThread.Queue (Async Handoff)
+        VM->>VM: Atomic Swap + Filter + QuickSort
+        VM->>UI: Invalidate Cards & Virtual ListView
     end
 ```
 
-### Domain & Service Class Hierarchy (`classDiagram`)
+### 4. Core MVVM Class Contracts
 
 ```mermaid
 classDiagram
+    direction LR
     class IMetricsService {
         <<interface>>
-        +CollectSnapshot() TSystemMetrics
-        +CollectProcesses() TProcessList
-        +CollectNetworkConnections() TNetworkConnectionList
-        +CollectServices() TServiceList
-        +TerminateProcessById(PID) Boolean
-        +SetProcessPriorityById(PID, Priority) Boolean
-        +SuspendResumeProcessById(PID, Suspend) Boolean
-        +GetProcessAffinityById(PID, ProcMask, SysMask) Boolean
-        +SetProcessAffinityById(PID, ProcMask) Boolean
-        +RunNewTask(Command, RunAsAdmin) Boolean
-        +RestartProcessById(PID) Boolean
-        +ControlWindowsService(Name, Action) Boolean
-        +GetProcessModules(PID) TStringList
+        +CollectSnapshot()
+        +CollectProcesses()
+        +CollectNetworkConnections()
+        +CollectServices()
+        +SetProcessAffinityById()
+        +RunNewTask()
     }
-
     class TMetricsService {
-        -FWorkerThread: TMetricsWorkerThread
-        -FPrevCpuTimes: TDictionary
-        -FPrevIoBytes: TDictionary
-        -FProcMetaCache: TDictionary
-        -FPrevCoreIdle: array of Int64
-        -FPrevCoreTotal: array of Int64
-        -FIntervalMs: Cardinal
+        -FWorkerThread
+        -FProcMetaCache
+        -FPrevCpuTimes
     }
-
     class TMainViewModel {
-        -FMetricsService: IMetricsService
-        -FExportService: IExportService
-        -FProcesses: TProcessList
-        -FFilteredProcesses: TProcessList
-        +SetSort(Column)
-        +SetFilterMode(Mode)
+        -FFilteredProcesses
+        +SetSort()
+        +SetFilterMode()
         +ToggleTreeView()
-        +SetProcessPriority(PID, Class, Name) Boolean
-        +SuspendResumeProcess(PID, Suspend) Boolean
-        +GetProcessAffinity(PID, ProcMask, SysMask) Boolean
-        +SetProcessAffinity(PID, ProcMask) Boolean
-        +RunNewTask(Command, RunAsAdmin) Boolean
-        +RestartProcess(PID) Boolean
-        +ControlServiceByName(Name, Action) Boolean
     }
-
     class TMainForm {
-        -FViewModel: TMainViewModel
-        -lvProcesses: TListView
-        -lvNetwork: TListView
-        -lvServices: TListView
+        -lvProcesses
         +ShowProcessDetailsDialog()
         +ShowAffinityDialog()
-        +ShowRunTaskDialog()
         +ShowCpuCoresDialog()
-        +DrawMetricCard()
     }
 
     IMetricsService <|.. TMetricsService
