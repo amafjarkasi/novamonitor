@@ -2950,10 +2950,10 @@ procedure TMainForm.DrawMetricCard(const APaintBox: TPaintBox; const ATitle: str
 var
   C: TCanvas;
   R, BarR, SparkR: TRect;
-  Y, MaxPrimaryWidth, MaxTextWidth: Integer;
+  Y, MaxTextWidth: Integer;
   TitleTxt, PrimaryTxt, SecondaryTxt: string;
 
-  // Truncate with an ellipsis so text never runs under the sparkline zone;
+  // Truncate with an ellipsis against the full text column width;
   // measured against whichever font the caller has already selected
   function FitText(const S: string; const MaxW: Integer): string;
   begin
@@ -2966,23 +2966,20 @@ var
 
 const
   PadX = 14;
-  LineGap = 6;
+  LineGap = 5;
 begin
   C := APaintBox.Canvas;
   R := Rect(0, 0, APaintBox.Width, APaintBox.Height);
 
   TUIUtils.DrawCard(C, R, FColors.SurfaceCard, FColors.Border, 8);
 
-  // Stack title/value/secondary from measured text heights so the spacing
-  // stays even regardless of font metrics or DPI; bar pinned to the bottom
+  // Full-width text column: title/value/subtitle stack downward and the
+  // sparkline runs as a wide short strip below the text, above the bar —
+  // no right-side chart squeezing the text into half a card
   C.Brush.Style := bsClear;
   C.Font.Name := 'Segoe UI';
 
-  // Text column ends 10px left of the sparkline's left edge (Right - 82)
-  if Length(AHistory) >= 2 then
-    MaxTextWidth := (R.Right - 92) - (R.Left + PadX)
-  else
-    MaxTextWidth := (R.Right - PadX) - (R.Left + PadX);
+  MaxTextWidth := (R.Right - PadX) - (R.Left + PadX);
 
   Y := R.Top + 10;
   C.Font.Size := 9;
@@ -2995,10 +2992,9 @@ begin
   C.Font.Size := 15;
   C.Font.Style := [fsBold];
   C.Font.Color := FColors.TextPrimary;
-  MaxPrimaryWidth := MaxTextWidth;
-  while (C.Font.Size > 11) and (C.TextWidth(APrimaryVal) > MaxPrimaryWidth) do
+  while (C.Font.Size > 11) and (C.TextWidth(APrimaryVal) > MaxTextWidth) do
     C.Font.Size := C.Font.Size - 1;
-  PrimaryTxt := FitText(APrimaryVal, MaxPrimaryWidth);
+  PrimaryTxt := FitText(APrimaryVal, MaxTextWidth);
   C.TextOut(R.Left + PadX, Y, PrimaryTxt);
   Inc(Y, C.TextHeight(PrimaryTxt) + LineGap);
 
@@ -3007,13 +3003,16 @@ begin
   C.Font.Color := FColors.TextSecondary;
   SecondaryTxt := FitText(ASecondaryVal, MaxTextWidth);
   C.TextOut(R.Left + PadX, Y, SecondaryTxt);
+  Inc(Y, C.TextHeight(SecondaryTxt) + 2);
 
-  // Render rolling sparkline in the upper-right quadrant if history exists
+  // Wide sparkline strip: ~3x the horizontal resolution of the old
+  // right-side chart, and only drawn when vertical space remains
   if Length(AHistory) >= 2 then
   begin
-    SparkR := Rect(R.Right - 82, R.Top + 12, R.Right - 14, R.Bottom - 26);
-    TUIUtils.DrawSparkline(C, SparkR, AHistory, ABarColor,
-      TUIUtils.BlendColor(FColors.SurfaceCard, ABarColor, 0.22));
+    SparkR := Rect(R.Left + PadX, Y, R.Right - PadX, R.Bottom - 18);
+    if SparkR.Bottom - SparkR.Top >= 16 then
+      TUIUtils.DrawSparkline(C, SparkR, AHistory, ABarColor,
+        TUIUtils.BlendColor(FColors.SurfaceCard, ABarColor, 0.22));
   end;
 
   if APercent >= 0 then
@@ -3112,7 +3111,7 @@ begin
     SubCaption := SubCaption + Format(' · %s shared', [TUIUtils.FormatMegabytes(G.SharedUsageMB)]);
 
   DrawMetricCard(pbCardGpu, 'GPU UTILIZATION', PrimaryVal,
-    Copy(G.Name, 1, 42) + ' · ' + SubCaption,
+    Copy(G.Name, 1, 28) + ' · ' + SubCaption,
     G.EngineUsagePercent, BarColor, FViewModel.GpuHistory.ToArray);
 end;
 
