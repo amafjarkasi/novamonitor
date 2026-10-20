@@ -115,6 +115,8 @@ type
     FArchitecture: string;
     FPriorityText: string;
     FTreeLevel: Integer;
+    FIntegrityLevel: string;
+    FElevated: Boolean;
   public
     constructor Create(const AId: Cardinal; const AName: string;
       const AMemoryMB: Single; const ACpuShare: Single;
@@ -144,9 +146,94 @@ type
     property Architecture: string read FArchitecture write FArchitecture;
     property PriorityText: string read FPriorityText write FPriorityText;
     property TreeLevel: Integer read FTreeLevel write FTreeLevel;
+    property IntegrityLevel: string read FIntegrityLevel write FIntegrityLevel;
+    property Elevated: Boolean read FElevated write FElevated;
   end;
 
   TProcessList = TObjectList<TProcessItem>;
+
+  /// <summary>
+  /// Environment block snapshot read from a target process PEB
+  /// (RTL_USER_PROCESS_PARAMETERS): working directory + NAME=value pairs
+  /// </summary>
+  TProcessEnvInfo = class
+  private
+    FAvailable: Boolean;
+    FWorkingDirectory: string;
+    FVariables: TStringList;
+  public
+    constructor Create;
+    destructor Destroy; override;
+    property Available: Boolean read FAvailable write FAvailable;
+    property WorkingDirectory: string read FWorkingDirectory write FWorkingDirectory;
+    property Variables: TStringList read FVariables;
+  end;
+
+  /// <summary>
+  /// One live thread of a process from the NT SystemProcessInformation
+  /// thread array, enriched with GetThreadDescription / QueryThreadCycleTime
+  /// </summary>
+  TThreadInfoItem = class
+  private
+    FThreadId: Cardinal;
+    FName: string;
+    FStateText: string;
+    FWaitReasonText: string;
+    FPriority: Integer;
+    FBasePriority: Integer;
+    FCpuPercent: Single;
+    FCycles: UInt64;
+    FContextSwitches: UInt64;
+    FStartAddress: NativeUInt;
+    FCreateTime: TDateTime;
+    FKernelTimeMs: UInt64;
+    FUserTimeMs: UInt64;
+    FTotalTime: Int64;
+    FSuspended: Boolean;
+  public
+    property ThreadId: Cardinal read FThreadId write FThreadId;
+    property Name: string read FName write FName;
+    property StateText: string read FStateText write FStateText;
+    property WaitReasonText: string read FWaitReasonText write FWaitReasonText;
+    property Priority: Integer read FPriority write FPriority;
+    property BasePriority: Integer read FBasePriority write FBasePriority;
+    property CpuPercent: Single read FCpuPercent write FCpuPercent;
+    property Cycles: UInt64 read FCycles write FCycles;
+    property ContextSwitches: UInt64 read FContextSwitches write FContextSwitches;
+    property StartAddress: NativeUInt read FStartAddress write FStartAddress;
+    property CreateTime: TDateTime read FCreateTime write FCreateTime;
+    property KernelTimeMs: UInt64 read FKernelTimeMs write FKernelTimeMs;
+    property UserTimeMs: UInt64 read FUserTimeMs write FUserTimeMs;
+    property TotalTime: Int64 read FTotalTime write FTotalTime;
+    property Suspended: Boolean read FSuspended write FSuspended;
+  end;
+
+  TThreadInfoList = TObjectList<TThreadInfoItem>;
+
+  /// <summary>
+  /// Security token details: integrity level, UAC elevation, token
+  /// virtualization flags, and the privilege set with enabled/disabled state
+  /// </summary>
+  TProcessSecurityInfo = class
+  private
+    FAvailable: Boolean;
+    FIntegrityLevel: string;
+    FIntegrityRid: Cardinal;
+    FElevated: Boolean;
+    FVirtualizationAllowed: Boolean;
+    FVirtualizationEnabled: Boolean;
+    FPrivileges: TStringList;
+  public
+    constructor Create;
+    destructor Destroy; override;
+    property Available: Boolean read FAvailable write FAvailable;
+    property IntegrityLevel: string read FIntegrityLevel write FIntegrityLevel;
+    property IntegrityRid: Cardinal read FIntegrityRid write FIntegrityRid;
+    property Elevated: Boolean read FElevated write FElevated;
+    property VirtualizationAllowed: Boolean read FVirtualizationAllowed write FVirtualizationAllowed;
+    property VirtualizationEnabled: Boolean read FVirtualizationEnabled write FVirtualizationEnabled;
+    property Privileges: TStringList read FPrivileges;
+  end;
 
   /// <summary>
   /// Active network socket connection mapped to process
@@ -319,6 +406,17 @@ type
     function GetProcessModules(const AProcessId: Cardinal): TStringList;
     function CollectStartupEntries: TStartupList;
     function SetStartupEntryEnabled(const AItem: TStartupItem; const AEnable: Boolean): Boolean;
+    // Deep process inspection (PEB, NT info classes, tokens, threads)
+    function CollectProcessEnvironment(const AProcessId: Cardinal): TProcessEnvInfo;
+    function CollectProcessSecurity(const AProcessId: Cardinal): TProcessSecurityInfo;
+    function CollectProcessThreads(const AProcessId: Cardinal): TThreadInfoList;
+    function SuspendResumeThreadById(const AProcessId, AThreadId: Cardinal; const ASuspend: Boolean): Boolean;
+    function TrimProcessWorkingSet(const AProcessId: Cardinal;
+      out ABeforeMB, AAfterMB, AFreedMB: Double): Boolean;
+    function GetProcessIoPriorityById(const AProcessId: Cardinal): Integer;
+    function SetProcessIoPriorityById(const AProcessId: Cardinal; const AIoPriority: Integer): Boolean;
+    function GetProcessPagePriorityById(const AProcessId: Cardinal): Integer;
+    function SetProcessPagePriorityById(const AProcessId: Cardinal; const APagePriority: Integer): Boolean;
   end;
 
   /// <summary>
@@ -418,6 +516,46 @@ begin
   FArchitecture := AArch;
   FPriorityText := 'Normal';
   FTreeLevel := 0;
+end;
+
+{ TProcessEnvInfo }
+
+constructor TProcessEnvInfo.Create;
+begin
+  inherited Create;
+  FAvailable := False;
+  FWorkingDirectory := '';
+  FVariables := TStringList.Create;
+  FVariables.Sorted := True;
+  FVariables.Duplicates := dupIgnore;
+end;
+
+destructor TProcessEnvInfo.Destroy;
+begin
+  FVariables.Free;
+  inherited Destroy;
+end;
+
+{ TProcessSecurityInfo }
+
+constructor TProcessSecurityInfo.Create;
+begin
+  inherited Create;
+  FAvailable := False;
+  FIntegrityLevel := '';
+  FIntegrityRid := 0;
+  FElevated := False;
+  FVirtualizationAllowed := False;
+  FVirtualizationEnabled := False;
+  FPrivileges := TStringList.Create;
+  FPrivileges.Sorted := True;
+  FPrivileges.Duplicates := dupIgnore;
+end;
+
+destructor TProcessSecurityInfo.Destroy;
+begin
+  FPrivileges.Free;
+  inherited Destroy;
 end;
 
 { TNetworkConnectionItem }

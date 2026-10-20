@@ -15,7 +15,8 @@ uses
   Nova.Service.Metrics in 'src/Services/Nova.Service.Metrics.pas',
   Nova.Service.Exporter in 'src/Services/Nova.Service.Exporter.pas',
   Nova.ViewModel.Main in 'src/ViewModels/Nova.ViewModel.Main.pas',
-  Nova.View.Main in 'src/Views/Nova.View.Main.pas';
+  Nova.View.Main in 'src/Views/Nova.View.Main.pas',
+  Nova.View.Hud in 'src/Views/Nova.View.Hud.pas';
 
 {$R *.res}
 

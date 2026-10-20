@@ -29,7 +29,8 @@ uses
   {$ENDIF}
   Nova.Types,
   Nova.Utils,
-  Nova.ViewModel.Main;
+  Nova.ViewModel.Main,
+  Nova.View.Hud;
 
 type
   TMainForm = class(TForm)
@@ -130,6 +131,10 @@ type
     btnNavNetwork: TButton;
     btnNavServices: TButton;
     btnNavStartup: TButton;
+    btnTrimRam: TButton;
+
+    // Compact always-on-top HUD overlay (Ctrl+M)
+    FHudForm: THudMonitorForm;
 
     // Network view controls
     pnlNetworkSection: TPanel;
@@ -207,6 +212,13 @@ type
     procedure mnuResumeProcessClick(Sender: TObject);
     procedure mnuRestartProcessClick(Sender: TObject);
     procedure mnuRunNewTaskClick(Sender: TObject);
+    procedure mnuTrimWorkingSetClick(Sender: TObject);
+    procedure mnuSetIoPriorityClick(Sender: TObject);
+    procedure mnuSetPagePriorityClick(Sender: TObject);
+    procedure btnTrimRamClick(Sender: TObject);
+
+    procedure ToggleHudMode;
+    procedure RestoreFromHud(Sender: TObject);
 
     procedure mnuCopyNameClick(Sender: TObject);
     procedure mnuCopyPidClick(Sender: TObject);
@@ -578,6 +590,14 @@ begin
   btnRunTask.Hint := 'Create and launch a new task or command (Ctrl+N)';
   btnRunTask.ShowHint := True;
   btnRunTask.OnClick := btnRunTaskClick;
+
+  btnTrimRam := TButton.Create(Self);
+  btnTrimRam.Parent := pnlTableToolbar;
+  btnTrimRam.SetBounds(891, 7, 92, 26);
+  btnTrimRam.Caption := 'Free RAM';
+  btnTrimRam.Hint := 'Empty the working set of the selected process (EmptyWorkingSet)';
+  btnTrimRam.ShowHint := True;
+  btnTrimRam.OnClick := btnTrimRamClick;
 end;
 
 procedure TMainForm.SetupProcessColumns;
@@ -1086,6 +1106,76 @@ begin
   PrioItem.OnClick := mnuSetPriorityClick;
   SubMenu.Add(PrioItem);
 
+  // I/O priority via NtSetInformationProcess(ProcessIoPriority, class 33)
+  SubMenu := TMenuItem.Create(FContextMenu);
+  SubMenu.Caption := 'Set I/O Priority';
+  FContextMenu.Items.Add(SubMenu);
+
+  PrioItem := TMenuItem.Create(FContextMenu);
+  PrioItem.Caption := 'Very Low (background I/O)';
+  PrioItem.Tag := 0;
+  PrioItem.OnClick := mnuSetIoPriorityClick;
+  SubMenu.Add(PrioItem);
+
+  PrioItem := TMenuItem.Create(FContextMenu);
+  PrioItem.Caption := 'Low';
+  PrioItem.Tag := 1;
+  PrioItem.OnClick := mnuSetIoPriorityClick;
+  SubMenu.Add(PrioItem);
+
+  PrioItem := TMenuItem.Create(FContextMenu);
+  PrioItem.Caption := 'Normal (default)';
+  PrioItem.Tag := 2;
+  PrioItem.OnClick := mnuSetIoPriorityClick;
+  SubMenu.Add(PrioItem);
+
+  PrioItem := TMenuItem.Create(FContextMenu);
+  PrioItem.Caption := 'High';
+  PrioItem.Tag := 3;
+  PrioItem.OnClick := mnuSetIoPriorityClick;
+  SubMenu.Add(PrioItem);
+
+  // Memory page priority via NtSetInformationProcess(ProcessPagePriority, class 39)
+  SubMenu := TMenuItem.Create(FContextMenu);
+  SubMenu.Caption := 'Set Memory Page Priority';
+  FContextMenu.Items.Add(SubMenu);
+
+  PrioItem := TMenuItem.Create(FContextMenu);
+  PrioItem.Caption := '0 (keep in RAM aggressively)';
+  PrioItem.Tag := 0;
+  PrioItem.OnClick := mnuSetPagePriorityClick;
+  SubMenu.Add(PrioItem);
+
+  PrioItem := TMenuItem.Create(FContextMenu);
+  PrioItem.Caption := '1';
+  PrioItem.Tag := 1;
+  PrioItem.OnClick := mnuSetPagePriorityClick;
+  SubMenu.Add(PrioItem);
+
+  PrioItem := TMenuItem.Create(FContextMenu);
+  PrioItem.Caption := '2';
+  PrioItem.Tag := 2;
+  PrioItem.OnClick := mnuSetPagePriorityClick;
+  SubMenu.Add(PrioItem);
+
+  PrioItem := TMenuItem.Create(FContextMenu);
+  PrioItem.Caption := '3';
+  PrioItem.Tag := 3;
+  PrioItem.OnClick := mnuSetPagePriorityClick;
+  SubMenu.Add(PrioItem);
+
+  PrioItem := TMenuItem.Create(FContextMenu);
+  PrioItem.Caption := '4';
+  PrioItem.Tag := 4;
+  PrioItem.OnClick := mnuSetPagePriorityClick;
+  SubMenu.Add(PrioItem);
+
+  PrioItem := TMenuItem.Create(FContextMenu);
+  PrioItem.Caption := '5 (default, discardable)';
+  PrioItem.Tag := 5;
+  PrioItem.OnClick := mnuSetPagePriorityClick;
+  SubMenu.Add(PrioItem);
+
   Item := TMenuItem.Create(FContextMenu);
   Item.Caption := 'Set CPU Affinity...';
   Item.OnClick := mnuSetAffinityClick;
@@ -1104,6 +1194,12 @@ begin
   Item := TMenuItem.Create(FContextMenu);
   Item.Caption := 'Restart Process';
   Item.OnClick := mnuRestartProcessClick;
+  FContextMenu.Items.Add(Item);
+
+  // EmptyWorkingSet: drops stale cached pages from the process working set
+  Item := TMenuItem.Create(FContextMenu);
+  Item.Caption := 'Trim Working Set (Free RAM)';
+  Item.OnClick := mnuTrimWorkingSetClick;
   FContextMenu.Items.Add(Item);
 
   Item := TMenuItem.Create(FContextMenu);
@@ -1301,6 +1397,87 @@ begin
   ShowRunTaskDialog;
 end;
 
+procedure TMainForm.mnuTrimWorkingSetClick(Sender: TObject);
+var
+  Proc: TProcessItem;
+begin
+  Proc := GetSelectedProcess;
+  if Proc = nil then
+  begin
+    lblFooterStatus.Caption := 'Select a process first to trim its working set';
+    lblFooterStatus.Font.Color := FColors.Warning;
+    Exit;
+  end;
+  FViewModel.TrimProcessWorkingSet(Proc.Id, Proc.Name);
+end;
+
+procedure TMainForm.btnTrimRamClick(Sender: TObject);
+begin
+  mnuTrimWorkingSetClick(Sender);
+end;
+
+procedure TMainForm.mnuSetIoPriorityClick(Sender: TObject);
+var
+  Proc: TProcessItem;
+  Mnu: TMenuItem;
+begin
+  if not (Sender is TMenuItem) then Exit;
+  Mnu := TMenuItem(Sender);
+  Proc := GetSelectedProcess;
+  if Proc = nil then
+  begin
+    lblFooterStatus.Caption := 'Select a process first to change its I/O priority';
+    lblFooterStatus.Font.Color := FColors.Warning;
+    Exit;
+  end;
+  FViewModel.SetProcessIoPriority(Proc.Id, Mnu.Tag, Mnu.Caption);
+end;
+
+procedure TMainForm.mnuSetPagePriorityClick(Sender: TObject);
+var
+  Proc: TProcessItem;
+  Mnu: TMenuItem;
+begin
+  if not (Sender is TMenuItem) then Exit;
+  Mnu := TMenuItem(Sender);
+  Proc := GetSelectedProcess;
+  if Proc = nil then
+  begin
+    lblFooterStatus.Caption := 'Select a process first to change its memory page priority';
+    lblFooterStatus.Font.Color := FColors.Warning;
+    Exit;
+  end;
+  FViewModel.SetProcessPagePriority(Proc.Id, Mnu.Tag);
+end;
+
+procedure TMainForm.ToggleHudMode;
+begin
+  if FHudForm = nil then
+  begin
+    FHudForm := THudMonitorForm.Create(nil, FViewModel);
+    FHudForm.OnRequestRestore := RestoreFromHud;
+  end;
+
+  if FHudForm.Visible then
+    RestoreFromHud(FHudForm)
+  else
+  begin
+    FHudForm.SetTheme(FColors);
+    FHudForm.PullLatestMetrics;
+    FHudForm.Show;
+    Hide;
+  end;
+end;
+
+procedure TMainForm.RestoreFromHud(Sender: TObject);
+begin
+  if Assigned(FHudForm) then
+    FHudForm.Hide;
+  Show;
+  WindowState := wsNormal;
+  BringToFront;
+end;
+
 procedure TMainForm.btnSvcStartClick(Sender: TObject);
 var
   Svc: TServiceItem;
@@ -1348,20 +1525,261 @@ begin
   FViewModel.ControlServiceByName(Svc.ServiceName, 2);
 end;
 
+type
+  /// <summary>
+  /// Live thread-inspector tab body: auto-refreshing TListView of the NT
+  /// thread array with per-thread CPU deltas, names, and suspend/resume.
+  /// The refresh timer is owned by the dialog so it cannot outlive it.
+  /// </summary>
+  TThreadInspectorTab = class
+  private
+    FViewModel: TMainViewModel;
+    FPid: Cardinal;
+    FProcName: string;
+    FLV: TListView;
+    FLblInfo: TLabel;
+    function SelectedThreadId: Cardinal;
+    procedure RefreshThreads;
+    procedure HandleTimer(Sender: TObject);
+    procedure HandleRefreshClick(Sender: TObject);
+    procedure HandleSuspendClick(Sender: TObject);
+    procedure HandleResumeClick(Sender: TObject);
+  public
+    constructor Create(const AParent: TWinControl; AViewModel: TMainViewModel;
+      const APid: Cardinal; const AProcName: string; const AColors: TThemeColors);
+  end;
+
+constructor TThreadInspectorTab.Create(const AParent: TWinControl;
+  AViewModel: TMainViewModel; const APid: Cardinal; const AProcName: string;
+  const AColors: TThemeColors);
+var
+  PnlTools: TPanel;
+  BtnRefresh, BtnSuspend, BtnResume: TButton;
+  Col: TListColumn;
+  Timer: TTimer;
+begin
+  FViewModel := AViewModel;
+  FPid := APid;
+  FProcName := AProcName;
+
+  PnlTools := TPanel.Create(AParent);
+  PnlTools.Parent := AParent;
+  PnlTools.Align := alTop;
+  PnlTools.Height := 38;
+  PnlTools.BevelOuter := bvNone;
+  PnlTools.Color := AColors.Surface;
+
+  BtnRefresh := TButton.Create(AParent);
+  BtnRefresh.Parent := PnlTools;
+  BtnRefresh.SetBounds(12, 6, 80, 26);
+  BtnRefresh.Caption := 'Refresh';
+  BtnRefresh.Hint := 'Re-snapshot the thread array now';
+  BtnRefresh.ShowHint := True;
+  BtnRefresh.OnClick := HandleRefreshClick;
+
+  BtnSuspend := TButton.Create(AParent);
+  BtnSuspend.Parent := PnlTools;
+  BtnSuspend.SetBounds(100, 6, 112, 26);
+  BtnSuspend.Caption := 'Suspend Thread';
+  BtnSuspend.Hint := 'Suspend the selected thread (SuspendThread)';
+  BtnSuspend.ShowHint := True;
+  BtnSuspend.OnClick := HandleSuspendClick;
+
+  BtnResume := TButton.Create(AParent);
+  BtnResume.Parent := PnlTools;
+  BtnResume.SetBounds(220, 6, 112, 26);
+  BtnResume.Caption := 'Resume Thread';
+  BtnResume.Hint := 'Resume the selected thread (ResumeThread)';
+  BtnResume.ShowHint := True;
+  BtnResume.OnClick := HandleResumeClick;
+
+  FLblInfo := TLabel.Create(AParent);
+  FLblInfo.Parent := PnlTools;
+  FLblInfo.SetBounds(344, 11, 420, 18);
+  FLblInfo.Caption := 'Initializing...';
+  FLblInfo.Font.Color := AColors.Accent;
+
+  FLV := TListView.Create(AParent);
+  FLV.Parent := AParent;
+  FLV.Align := alClient;
+  FLV.ViewStyle := vsReport;
+  FLV.GridLines := True;
+  FLV.RowSelect := True;
+  FLV.ReadOnly := True;
+  FLV.DoubleBuffered := True;
+  FLV.Color := AColors.Surface;
+  FLV.Font.Color := AColors.TextPrimary;
+
+  Col := FLV.Columns.Add;
+  Col.Caption := 'TID';
+  Col.Width := 70;
+
+  Col := FLV.Columns.Add;
+  Col.Caption := 'Thread Name';
+  Col.Width := 170;
+
+  Col := FLV.Columns.Add;
+  Col.Caption := 'State';
+  Col.Width := 110;
+
+  Col := FLV.Columns.Add;
+  Col.Caption := 'Wait Reason';
+  Col.Width := 130;
+
+  Col := FLV.Columns.Add;
+  Col.Caption := 'Priority';
+  Col.Width := 75;
+
+  Col := FLV.Columns.Add;
+  Col.Caption := 'CPU %';
+  Col.Width := 65;
+  Col.Alignment := taRightJustify;
+
+  Col := FLV.Columns.Add;
+  Col.Caption := 'Cycles';
+  Col.Width := 100;
+  Col.Alignment := taRightJustify;
+
+  Col := FLV.Columns.Add;
+  Col.Caption := 'Start Address';
+  Col.Width := 130;
+
+  Col := FLV.Columns.Add;
+  Col.Caption := 'Created';
+  Col.Width := 130;
+
+  Timer := TTimer.Create(AParent);
+  Timer.Interval := 2000;
+  Timer.OnTimer := HandleTimer;
+  Timer.Enabled := True;
+
+  RefreshThreads;
+end;
+
+function TThreadInspectorTab.SelectedThreadId: Cardinal;
+begin
+  Result := 0;
+  if Assigned(FLV) and Assigned(FLV.Selected) then
+    Result := Cardinal(StrToIntDef(FLV.Selected.Caption, 0));
+end;
+
+procedure TThreadInspectorTab.RefreshThreads;
+var
+  List: TThreadInfoList;
+  I: Integer;
+  T: TThreadInfoItem;
+  Li: TListItem;
+  StateTxt, CyclesTxt, CreatedTxt: string;
+begin
+  if (FViewModel = nil) or (FLV = nil) then Exit;
+  List := FViewModel.CollectProcessThreads(FPid);
+  try
+    FLV.Items.BeginUpdate;
+    try
+      FLV.Items.Clear;
+      for I := 0 to List.Count - 1 do
+      begin
+        T := List[I];
+        Li := FLV.Items.Add;
+        Li.Caption := IntToStr(T.ThreadId);
+        if T.Name <> '' then
+          Li.SubItems.Add(T.Name)
+        else
+          Li.SubItems.Add('—');
+        if T.Suspended then
+          StateTxt := T.StateText + ' (Suspended)'
+        else
+          StateTxt := T.StateText;
+        Li.SubItems.Add(StateTxt);
+        Li.SubItems.Add(T.WaitReasonText);
+        Li.SubItems.Add(Format('%d / %d', [T.Priority, T.BasePriority]));
+        Li.SubItems.Add(TUIUtils.FormatPercent(T.CpuPercent));
+        if T.Cycles >= 1000000 then
+          CyclesTxt := Format('%.1f M', [T.Cycles / 1000000.0])
+        else
+          CyclesTxt := IntToStr(Int64(T.Cycles));
+        Li.SubItems.Add(CyclesTxt);
+        Li.SubItems.Add('$' + IntToHex(Int64(T.StartAddress), 16));
+        if T.CreateTime > 0 then
+          CreatedTxt := FormatDateTime('yyyy-mm-dd hh:nn:ss', T.CreateTime)
+        else
+          CreatedTxt := '—';
+        Li.SubItems.Add(CreatedTxt);
+      end;
+    finally
+      FLV.Items.EndUpdate;
+    end;
+    FLblInfo.Caption := Format('%d live threads of "%s" · auto-refresh 2 s · CPU %% = share of one logical core',
+      [List.Count, FProcName]);
+  finally
+    List.Free;
+  end;
+end;
+
+procedure TThreadInspectorTab.HandleTimer(Sender: TObject);
+begin
+  RefreshThreads;
+end;
+
+procedure TThreadInspectorTab.HandleRefreshClick(Sender: TObject);
+begin
+  RefreshThreads;
+end;
+
+procedure TThreadInspectorTab.HandleSuspendClick(Sender: TObject);
+var
+  Tid: Cardinal;
+begin
+  Tid := SelectedThreadId;
+  if Tid = 0 then
+  begin
+    FLblInfo.Caption := 'Select a thread from the list first';
+    Exit;
+  end;
+  if FPid = GetCurrentProcessId then
+  begin
+    FLblInfo.Caption := 'Blocked: suspending NovaMonitor threads would deadlock the UI';
+    Exit;
+  end;
+  FViewModel.SuspendResumeThread(FPid, Tid, True);
+  RefreshThreads;
+end;
+
+procedure TThreadInspectorTab.HandleResumeClick(Sender: TObject);
+var
+  Tid: Cardinal;
+begin
+  Tid := SelectedThreadId;
+  if Tid = 0 then
+  begin
+    FLblInfo.Caption := 'Select a thread from the list first';
+    Exit;
+  end;
+  FViewModel.SuspendResumeThread(FPid, Tid, False);
+  RefreshThreads;
+end;
+
 procedure TMainForm.ShowProcessDetailsDialog;
 var
   Proc: TProcessItem;
   Dlg: TForm;
   PnlTop, PnlBottom: TPanel;
   LblTitle, LblSub: TLabel;
-  MemoReport: TMemo;
-  BtnCopy, BtnClose: TButton;
+  Pages: TPageControl;
+  TabSummary, TabThreads, TabEnv, TabSec: TTabSheet;
+  MemoReport, MemoEnv, MemoSec: TMemo;
+  BtnCopy, BtnCopyEnv, BtnClose: TButton;
   Modules: TStringList;
   Report: TStringList;
+  Env: TProcessEnvInfo;
+  Sec: TProcessSecurityInfo;
+  ThreadTab: TThreadInspectorTab;
+  ModalRes: TModalResult;
   I, NetMatches, SvcMatches: Integer;
   NetItem: TNetworkConnectionItem;
   SvcItem: TServiceItem;
   HandleNote, GdiNote, UserNote: string;
+  IntegrityText, ElevatedText, CwdText: string;
 begin
   Proc := GetSelectedProcess;
   if Proc = nil then
@@ -1373,6 +1791,9 @@ begin
 
   Report := TStringList.Create;
   Modules := FViewModel.GetProcessModules(Proc.Id);
+  Env := FViewModel.CollectProcessEnvironment(Proc.Id);
+  Sec := FViewModel.CollectProcessSecurity(Proc.Id);
+  ThreadTab := nil;
   try
     if Proc.HandleCount > 5000 then
       HandleNote := '  [! High Handle Count — Potential Handle Leak]'
@@ -1386,6 +1807,31 @@ begin
       UserNote := '  [! High USER Count — Potential USER Leak]'
     else
       UserNote := '';
+
+    // Live token query wins; the cached scan metadata is the fallback
+    if Sec.Available then
+    begin
+      IntegrityText := Sec.IntegrityLevel;
+      if Sec.Elevated then
+        ElevatedText := 'Yes (elevated token)'
+      else
+        ElevatedText := 'No';
+    end
+    else
+    begin
+      if Proc.IntegrityLevel <> '' then
+        IntegrityText := Proc.IntegrityLevel
+      else
+        IntegrityText := 'Unknown';
+      if Proc.Elevated then
+        ElevatedText := 'Yes'
+      else
+        ElevatedText := 'No / Unknown';
+    end;
+    if Env.Available and (Env.WorkingDirectory <> '') then
+      CwdText := Env.WorkingDirectory
+    else
+      CwdText := '[unavailable — protected or restricted process]';
 
     Report.Add('====================================================================');
     Report.Add(Format('  PROCESS TELEMETRY & EXECUTION METADATA — %s (PID %d)', [Proc.Name, Proc.Id]));
@@ -1402,6 +1848,9 @@ begin
     Report.Add(Format('  User Account       : %s', [Proc.UserName]));
     Report.Add(Format('  Architecture       : %s', [Proc.Architecture]));
     Report.Add(Format('  Priority Class     : %s', [Proc.PriorityText]));
+    Report.Add(Format('  Integrity Level    : %s', [IntegrityText]));
+    Report.Add(Format('  UAC Elevation      : %s', [ElevatedText]));
+    Report.Add(Format('  Working Directory  : %s', [CwdText]));
     Report.Add(Format('  Health Status      : %s', [TUIUtils.StatusToString(Proc.Status)]));
     Report.Add(Format('  CPU Utilization    : %s', [TUIUtils.FormatPercent(Proc.CpuSharePercent)]));
     Report.Add(Format('  Working Set (RAM)  : %s', [TUIUtils.FormatMegabytes(Proc.MemoryWorkingSetMB)]));
@@ -1476,8 +1925,8 @@ begin
     try
       Dlg.Caption := Format('Process Inspector — %s (PID %d)', [Proc.Name, Proc.Id]);
       Dlg.Position := poMainFormCenter;
-      Dlg.Width := 740;
-      Dlg.Height := 560;
+      Dlg.Width := 780;
+      Dlg.Height := 600;
       Dlg.Color := FColors.Background;
       Dlg.Font.Name := 'Segoe UI';
       Dlg.Font.Size := 9;
@@ -1491,7 +1940,7 @@ begin
 
       LblTitle := TLabel.Create(Dlg);
       LblTitle.Parent := PnlTop;
-      LblTitle.SetBounds(16, 10, 680, 22);
+      LblTitle.SetBounds(16, 10, 720, 22);
       LblTitle.Caption := Format('%s  (PID: %d  ·  %s  ·  Priority: %s)',
         [Proc.Name, Proc.Id, Proc.Architecture, Proc.PriorityText]);
       LblTitle.Font.Size := 11;
@@ -1500,11 +1949,11 @@ begin
 
       LblSub := TLabel.Create(Dlg);
       LblSub.Parent := PnlTop;
-      LblSub.SetBounds(16, 34, 680, 18);
-      LblSub.Caption := Format('CPU: %s   |   RAM: %s   |   Handles: %d   |   GDI/USER: %d/%d   |   User: %s',
+      LblSub.SetBounds(16, 34, 720, 18);
+      LblSub.Caption := Format('CPU: %s   |   RAM: %s   |   Handles: %d   |   GDI/USER: %d/%d   |   Integrity: %s   |   User: %s',
         [TUIUtils.FormatPercent(Proc.CpuSharePercent),
          TUIUtils.FormatMegabytes(Proc.MemoryWorkingSetMB),
-         Proc.HandleCount, Proc.GdiObjects, Proc.UserObjects, Proc.UserName]);
+         Proc.HandleCount, Proc.GdiObjects, Proc.UserObjects, IntegrityText, Proc.UserName]);
       LblSub.Font.Size := 9;
       LblSub.Font.Color := FColors.Accent;
 
@@ -1521,19 +1970,33 @@ begin
       BtnCopy.Caption := 'Copy Full Report';
       BtnCopy.ModalResult := mrYes;
 
+      BtnCopyEnv := TButton.Create(Dlg);
+      BtnCopyEnv.Parent := PnlBottom;
+      BtnCopyEnv.SetBounds(176, 8, 160, 28);
+      BtnCopyEnv.Caption := 'Copy Environment';
+      BtnCopyEnv.ModalResult := mrNo;
+
       BtnClose := TButton.Create(Dlg);
       BtnClose.Parent := PnlBottom;
-      BtnClose.SetBounds(634, 8, 90, 28);
+      BtnClose.SetBounds(674, 8, 90, 28);
       BtnClose.Anchors := [akTop, akRight];
       BtnClose.Caption := 'Close';
       BtnClose.Cancel := True;
       BtnClose.Default := True;
       BtnClose.ModalResult := mrOk;
 
+      Pages := TPageControl.Create(Dlg);
+      Pages.Parent := Dlg;
+      Pages.Align := alClient;
+
+      TabSummary := TTabSheet.Create(Pages);
+      TabSummary.PageControl := Pages;
+      TabSummary.Caption := 'Summary';
+
       MemoReport := TMemo.Create(Dlg);
-      MemoReport.Parent := Dlg;
+      MemoReport.Parent := TabSummary;
       MemoReport.Align := alClient;
-      MemoReport.BorderSpacing.Around := 12;
+      MemoReport.BorderSpacing.Around := 6;
       MemoReport.ReadOnly := True;
       MemoReport.ScrollBars := ssBoth;
       MemoReport.WordWrap := False;
@@ -1543,15 +2006,110 @@ begin
       MemoReport.Font.Color := FColors.TextPrimary;
       MemoReport.Lines.Assign(Report);
 
-      if Dlg.ShowModal = mrYes then
+      TabThreads := TTabSheet.Create(Pages);
+      TabThreads.PageControl := Pages;
+      TabThreads.Caption := 'Threads';
+      ThreadTab := TThreadInspectorTab.Create(TabThreads, FViewModel, Proc.Id, Proc.Name, FColors);
+
+      TabEnv := TTabSheet.Create(Pages);
+      TabEnv.PageControl := Pages;
+      TabEnv.Caption := 'Environment';
+
+      MemoEnv := TMemo.Create(Dlg);
+      MemoEnv.Parent := TabEnv;
+      MemoEnv.Align := alClient;
+      MemoEnv.BorderSpacing.Around := 6;
+      MemoEnv.ReadOnly := True;
+      MemoEnv.ScrollBars := ssBoth;
+      MemoEnv.WordWrap := False;
+      MemoEnv.Color := FColors.SurfaceCard;
+      MemoEnv.Font.Name := 'Consolas';
+      MemoEnv.Font.Size := 9;
+      MemoEnv.Font.Color := FColors.TextPrimary;
+      if Env.Available then
+      begin
+        if Env.WorkingDirectory <> '' then
+        begin
+          MemoEnv.Lines.Add('WORKING DIRECTORY');
+          MemoEnv.Lines.Add('  ' + Env.WorkingDirectory);
+          MemoEnv.Lines.Add('');
+        end;
+        MemoEnv.Lines.Add(Format('ENVIRONMENT VARIABLES (%d)', [Env.Variables.Count]));
+        for I := 0 to Env.Variables.Count - 1 do
+          MemoEnv.Lines.Add('  ' + Env.Variables[I]);
+      end
+      else
+        MemoEnv.Lines.Add('[Environment block unavailable: protected process, kernel process, or restricted access]');
+
+      TabSec := TTabSheet.Create(Pages);
+      TabSec.PageControl := Pages;
+      TabSec.Caption := 'Security';
+
+      MemoSec := TMemo.Create(Dlg);
+      MemoSec.Parent := TabSec;
+      MemoSec.Align := alClient;
+      MemoSec.BorderSpacing.Around := 6;
+      MemoSec.ReadOnly := True;
+      MemoSec.ScrollBars := ssBoth;
+      MemoSec.WordWrap := False;
+      MemoSec.Color := FColors.SurfaceCard;
+      MemoSec.Font.Name := 'Consolas';
+      MemoSec.Font.Size := 9;
+      MemoSec.Font.Color := FColors.TextPrimary;
+      MemoSec.Lines.Add('SECURITY TOKEN & INTEGRITY DETAILS');
+      MemoSec.Lines.Add('----------------------------------');
+      if Sec.Available then
+      begin
+        MemoSec.Lines.Add(Format('  Integrity Level         : %s (RID 0x%.4x)', [Sec.IntegrityLevel, Sec.IntegrityRid]));
+        if Sec.Elevated then
+          MemoSec.Lines.Add('  UAC Elevation           : Yes (token carries the elevated group)')
+        else
+          MemoSec.Lines.Add('  UAC Elevation           : No');
+        if Sec.VirtualizationAllowed then
+          MemoSec.Lines.Add('  Virtualization Allowed  : Yes')
+        else
+          MemoSec.Lines.Add('  Virtualization Allowed  : No');
+        if Sec.VirtualizationEnabled then
+          MemoSec.Lines.Add('  Virtualization Enabled  : Yes')
+        else
+          MemoSec.Lines.Add('  Virtualization Enabled  : No');
+        MemoSec.Lines.Add('');
+        MemoSec.Lines.Add(Format('TOKEN PRIVILEGES (%d)', [Sec.Privileges.Count]));
+        for I := 0 to Sec.Privileges.Count - 1 do
+          MemoSec.Lines.Add('  ' + Sec.Privileges[I]);
+      end
+      else
+      begin
+        MemoSec.Lines.Add('  [Live token query unavailable — protected process or restricted access]');
+        MemoSec.Lines.Add('');
+        if Proc.IntegrityLevel <> '' then
+          MemoSec.Lines.Add('  Cached Integrity Level  : ' + Proc.IntegrityLevel)
+        else
+          MemoSec.Lines.Add('  Cached Integrity Level  : Unknown');
+        if Proc.Elevated then
+          MemoSec.Lines.Add('  Cached UAC Elevation    : Yes')
+        else
+          MemoSec.Lines.Add('  Cached UAC Elevation    : No / Unknown');
+      end;
+
+      ModalRes := Dlg.ShowModal;
+      if ModalRes = mrYes then
       begin
         Clipboard.AsText := Report.Text;
         lblFooterStatus.Caption := Format('Copied full diagnostic report for %s (PID %d)', [Proc.Name, Proc.Id]);
+      end
+      else if ModalRes = mrNo then
+      begin
+        Clipboard.AsText := MemoEnv.Lines.Text;
+        lblFooterStatus.Caption := Format('Copied environment block for %s (PID %d)', [Proc.Name, Proc.Id]);
       end;
     finally
+      FreeAndNil(ThreadTab);
       Dlg.Free;
     end;
   finally
+    Env.Free;
+    Sec.Free;
     Modules.Free;
     Report.Free;
   end;
@@ -2049,6 +2607,11 @@ begin
     btnPinWindowClick(nil);
     Key := 0;
   end
+  else if (ssCtrl in Shift) and (Key = Word('M')) then
+  begin
+    ToggleHudMode;
+    Key := 0;
+  end
   else if (ssCtrl in Shift) and (Key = Word('1')) then
   begin
     btnFilterAllClick(nil);
@@ -2090,6 +2653,8 @@ end;
 
 procedure TMainForm.TrayIconClick(Sender: TObject);
 begin
+  if Assigned(FHudForm) then
+    FHudForm.Hide;
   Show;
   WindowState := wsNormal;
   FTrayIcon.Visible := False;
@@ -2124,6 +2689,8 @@ end;
 
 procedure TMainForm.FormDestroy(Sender: TObject);
 begin
+  // The HUD holds a ViewModel reference and must die before the model does
+  FreeAndNil(FHudForm);
   FViewModel.Free;
 end;
 
@@ -2383,7 +2950,20 @@ procedure TMainForm.DrawMetricCard(const APaintBox: TPaintBox; const ATitle: str
 var
   C: TCanvas;
   R, BarR, SparkR: TRect;
-  Y, MaxPrimaryWidth: Integer;
+  Y, MaxPrimaryWidth, MaxTextWidth: Integer;
+  TitleTxt, PrimaryTxt, SecondaryTxt: string;
+
+  // Truncate with an ellipsis so text never runs under the sparkline zone;
+  // measured against whichever font the caller has already selected
+  function FitText(const S: string; const MaxW: Integer): string;
+  begin
+    Result := S;
+    if (MaxW <= 0) or (C.TextWidth(Result) <= MaxW) then Exit;
+    while (Length(Result) > 1) and (C.TextWidth(Result + '…') > MaxW) do
+      Delete(Result, Length(Result), 1);
+    Result := Result + '…';
+  end;
+
 const
   PadX = 14;
   LineGap = 6;
@@ -2398,29 +2978,35 @@ begin
   C.Brush.Style := bsClear;
   C.Font.Name := 'Segoe UI';
 
+  // Text column ends 10px left of the sparkline's left edge (Right - 82)
+  if Length(AHistory) >= 2 then
+    MaxTextWidth := (R.Right - 92) - (R.Left + PadX)
+  else
+    MaxTextWidth := (R.Right - PadX) - (R.Left + PadX);
+
   Y := R.Top + 10;
   C.Font.Size := 9;
   C.Font.Style := [fsBold];
   C.Font.Color := FColors.TextSecondary;
-  C.TextOut(R.Left + PadX, Y, ATitle);
-  Inc(Y, C.TextHeight(ATitle) + LineGap);
+  TitleTxt := FitText(ATitle, MaxTextWidth);
+  C.TextOut(R.Left + PadX, Y, TitleTxt);
+  Inc(Y, C.TextHeight(TitleTxt) + LineGap);
 
   C.Font.Size := 15;
   C.Font.Style := [fsBold];
   C.Font.Color := FColors.TextPrimary;
-  if Length(AHistory) >= 2 then
-  begin
-    MaxPrimaryWidth := (R.Right - 92) - (R.Left + PadX);
-    while (C.Font.Size > 11) and (C.TextWidth(APrimaryVal) > MaxPrimaryWidth) do
-      C.Font.Size := C.Font.Size - 1;
-  end;
-  C.TextOut(R.Left + PadX, Y, APrimaryVal);
-  Inc(Y, C.TextHeight(APrimaryVal) + LineGap);
+  MaxPrimaryWidth := MaxTextWidth;
+  while (C.Font.Size > 11) and (C.TextWidth(APrimaryVal) > MaxPrimaryWidth) do
+    C.Font.Size := C.Font.Size - 1;
+  PrimaryTxt := FitText(APrimaryVal, MaxPrimaryWidth);
+  C.TextOut(R.Left + PadX, Y, PrimaryTxt);
+  Inc(Y, C.TextHeight(PrimaryTxt) + LineGap);
 
   C.Font.Size := 8;
   C.Font.Style := [];
   C.Font.Color := FColors.TextSecondary;
-  C.TextOut(R.Left + PadX, Y, ASecondaryVal);
+  SecondaryTxt := FitText(ASecondaryVal, MaxTextWidth);
+  C.TextOut(R.Left + PadX, Y, SecondaryTxt);
 
   // Render rolling sparkline in the upper-right quadrant if history exists
   if Length(AHistory) >= 2 then

@@ -54,8 +54,14 @@ var
   StartList: TStartupList;
   EmptyItem: TStartupItem;
   TestBmp: TBitmap;
+  Env, Env2: TProcessEnvInfo;
+  Sec: TProcessSecurityInfo;
+  Threads, Threads2: TThreadInfoList;
+  B1, B2, B3: Double;
+  IoP, PgP: Integer;
   HasTcp, HasLocalPort, HasRunning, HasChildLevel, HasImagePath, HasUser: Boolean;
   HasCmdLine, HasHandles, HasPublisher, HasEnabled, AllNamed, AllNetOk: Boolean;
+  HasPath, HasSeChange, HasIntegrity: Boolean;
   ProcMask, SysMask: NativeUInt;
   AlertCpu, AlertRam, AlertDisk: TAlertChannelState;
   AlertKind, AlertSeverity: Integer;
@@ -141,6 +147,71 @@ begin
     finally
       Strs.Free;
     end;
+
+    // --- Deep inspection: PEB environment, security token, threads, trim, NT priorities ---
+    WriteLn('Testing Deep Process Inspection (PEB / Token / Threads / Trim)...');
+    Env := Svc.CollectProcessEnvironment(GetCurrentProcessId);
+    try
+      Check('env: own environment readable from PEB', Env.Available);
+      Check('env: working directory non-empty', Env.WorkingDirectory <> '');
+      Check('env: variables collected (>3)', Env.Variables.Count > 3);
+      HasPath := False;
+      for I := 0 to Env.Variables.Count - 1 do
+        if Pos('PATH=', UpperCase(Env.Variables[I])) = 1 then
+          HasPath := True;
+      Check('env: PATH variable present', HasPath);
+    finally
+      Env.Free;
+    end;
+    Env2 := Svc.CollectProcessEnvironment(0);
+    try
+      Check('env: PID 0 guarded (no PEB)', not Env2.Available);
+    finally
+      Env2.Free;
+    end;
+
+    Sec := Svc.CollectProcessSecurity(GetCurrentProcessId);
+    try
+      Check('sec: own token query available', Sec.Available);
+      Check('sec: integrity level resolved', Sec.IntegrityLevel <> '');
+      Check('sec: integrity RID within known bands',
+        (Sec.IntegrityRid >= $1000) and (Sec.IntegrityRid <= $6000));
+      Check('sec: privilege list collected', Sec.Privileges.Count >= 3);
+      HasSeChange := False;
+      for I := 0 to Sec.Privileges.Count - 1 do
+        if Pos('SeChangeNotifyPrivilege', Sec.Privileges[I]) > 0 then
+          HasSeChange := True;
+      Check('sec: SeChangeNotifyPrivilege present (universally held)', HasSeChange);
+    finally
+      Sec.Free;
+    end;
+
+    Threads := Svc.CollectProcessThreads(GetCurrentProcessId);
+    try
+      Check('threads: own threads enumerated from NT thread array', Threads.Count >= 1);
+      Check('threads: state text populated', Threads[0].StateText <> '');
+      Check('threads: wait reason text populated', Threads[0].WaitReasonText <> '');
+      Check('threads: total CPU time reported', Threads[0].TotalTime >= 0);
+    finally
+      Threads.Free;
+    end;
+    Check('threads: TID 0 suspend guarded', not Svc.SuspendResumeThreadById(GetCurrentProcessId, 0, True));
+
+    Check('trim: PID 0 guarded', not Svc.TrimProcessWorkingSet(0, B1, B2, B3));
+    Check('trim: own working set emptied (after <= before)',
+      Svc.TrimProcessWorkingSet(GetCurrentProcessId, B1, B2, B3) and (B2 <= B1));
+
+    IoP := Svc.GetProcessIoPriorityById(GetCurrentProcessId);
+    Check('ioprio: own I/O priority in [0..3]', (IoP >= 0) and (IoP <= 3));
+    Check('ioprio: PID 0 guarded', Svc.GetProcessIoPriorityById(0) = -1);
+    Check('ioprio: invalid level 9 rejected', not Svc.SetProcessIoPriorityById(GetCurrentProcessId, 9));
+    Check('ioprio: set Normal (2) succeeds', Svc.SetProcessIoPriorityById(GetCurrentProcessId, 2));
+    Check('ioprio: value readable after set', Svc.GetProcessIoPriorityById(GetCurrentProcessId) = 2);
+
+    PgP := Svc.GetProcessPagePriorityById(GetCurrentProcessId);
+    Check('pageprio: own page priority in [0..5]', (PgP >= 0) and (PgP <= 5));
+    Check('pageprio: invalid level 7 rejected', not Svc.SetProcessPagePriorityById(GetCurrentProcessId, 7));
+    Check('pageprio: set default 5 succeeds', Svc.SetProcessPagePriorityById(GetCurrentProcessId, 5));
 
     // --- Polling Interval Tests ---
     WriteLn('Testing Polling Interval Dynamic Control...');
@@ -425,6 +496,21 @@ begin
         Check('metadata: contains processes with command line via NtQueryInformationProcess(60)', HasCmdLine);
         Check('metadata: contains processes with kernel HandleCount > 0', HasHandles);
         Check('metadata: contains processes with publisher CompanyName via version.dll', HasPublisher);
+
+        HasIntegrity := False;
+        for I := 0 to VM.FilteredProcesses.Count - 1 do
+          if VM.FilteredProcesses[I].IntegrityLevel <> '' then
+            HasIntegrity := True;
+        Check('metadata: contains processes with token integrity level', HasIntegrity);
+
+        // Deep inspection via ViewModel (thread delta state + aggregate disk I/O)
+        Threads2 := VM.CollectProcessThreads(GetCurrentProcessId);
+        try
+          Check('vm: threads via view model', Threads2.Count >= 1);
+        finally
+          Threads2.Free;
+        end;
+        Check('vm: aggregate disk I/O rate >= 0', VM.GetAggregateDiskIoKBps >= 0);
 
         // Network & Services ViewModel integration
         VM.SetActiveView(avNetwork);

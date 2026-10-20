@@ -61,6 +61,12 @@ type
     FAlertRam: TAlertChannelState;
     FAlertDisk: TAlertChannelState;
 
+    // Live thread-inspector delta state (per-TID totals of the inspected PID)
+    FThreadListPid: Cardinal;
+    FThreadPrevTimes: TDictionary<Cardinal, Int64>;
+    FThreadPrevTick: UInt64;
+    FThreadHasSample: Boolean;
+
     FOnMetricsUpdated: TMetricsUpdateEvent;
     FOnProcessesUpdated: TProcessListUpdateEvent;
     FOnNetworkUpdated: TNetworkListUpdateEvent;
@@ -130,6 +136,18 @@ type
     procedure SetStartupSort(const AColumn: Integer);
     function SetStartupEnabled(const AItem: TStartupItem; const AEnable: Boolean): Boolean;
     procedure SetPollingInterval(const AIntervalMs: Cardinal);
+
+    // Deep process inspection commands
+    function CollectProcessEnvironment(const AProcessId: Cardinal): TProcessEnvInfo;
+    function CollectProcessSecurity(const AProcessId: Cardinal): TProcessSecurityInfo;
+    function CollectProcessThreads(const AProcessId: Cardinal): TThreadInfoList;
+    function SuspendResumeThread(const AProcessId, AThreadId: Cardinal; const ASuspend: Boolean): Boolean;
+    function TrimProcessWorkingSet(const AProcessId: Cardinal; const AProcessName: string): Boolean;
+    function GetProcessIoPriority(const AProcessId: Cardinal): Integer;
+    function SetProcessIoPriority(const AProcessId: Cardinal; const AIoPriority: Integer; const ANameText: string): Boolean;
+    function GetProcessPagePriority(const AProcessId: Cardinal): Integer;
+    function SetProcessPagePriority(const AProcessId: Cardinal; const APagePriority: Integer): Boolean;
+    function GetAggregateDiskIoKBps: Single;
 
     property LatestMetrics: TSystemMetrics read FLatestMetrics;
     property FilteredProcesses: TProcessList read FFilteredProcesses;
@@ -211,6 +229,10 @@ begin
   FillChar(FAlertCpu, SizeOf(FAlertCpu), 0);
   FillChar(FAlertRam, SizeOf(FAlertRam), 0);
   FillChar(FAlertDisk, SizeOf(FAlertDisk), 0);
+  FThreadListPid := 0;
+  FThreadPrevTimes := TDictionary<Cardinal, Int64>.Create;
+  FThreadPrevTick := 0;
+  FThreadHasSample := False;
   FCurrentTheme := atDark;
   FThemeColors := TUIUtils.GetThemeColors(FCurrentTheme);
   FLatestMetrics := TSystemMetrics.CreateEmpty;
@@ -227,6 +249,7 @@ destructor TMainViewModel.Destroy;
 begin
   if Assigned(FMetricsService) then
     FMetricsService.StopMonitoring;
+  FThreadPrevTimes.Free;
   FFilteredStartup.Free;
   FStartupItems.Free;
   FFilteredServices.Free;
@@ -480,7 +503,7 @@ begin
               Continue;
         end;
 
-        // Extended multi-field search filter (PID, Name, User, Path, Arch, CommandLine, Publisher, Description)
+        // Extended multi-field search filter (PID, Name, User, Path, Arch, CommandLine, Publisher, Description, Integrity)
         if (FSearchFilter = '') or
            (Pos(FSearchFilter, LowerCase(Item.Name)) > 0) or
            (Pos(FSearchFilter, IntToStr(Item.Id)) > 0) or
@@ -489,7 +512,8 @@ begin
            (Pos(FSearchFilter, LowerCase(Item.Architecture)) > 0) or
            (Pos(FSearchFilter, LowerCase(Item.CommandLine)) > 0) or
            (Pos(FSearchFilter, LowerCase(Item.CompanyName)) > 0) or
-           (Pos(FSearchFilter, LowerCase(Item.Description)) > 0) then
+           (Pos(FSearchFilter, LowerCase(Item.Description)) > 0) or
+           (Pos(FSearchFilter, LowerCase(Item.IntegrityLevel)) > 0) then
         begin
           FFilteredProcesses.Add(Item);
         end;
@@ -518,7 +542,7 @@ begin
             Continue;
       end;
 
-      // Extended multi-field search filter (PID, Name, User, Path, Arch, CommandLine, Publisher, Description)
+      // Extended multi-field search filter (PID, Name, User, Path, Arch, CommandLine, Publisher, Description, Integrity)
       if (FSearchFilter = '') or
          (Pos(FSearchFilter, LowerCase(Item.Name)) > 0) or
          (Pos(FSearchFilter, IntToStr(Item.Id)) > 0) or
@@ -527,7 +551,8 @@ begin
          (Pos(FSearchFilter, LowerCase(Item.Architecture)) > 0) or
          (Pos(FSearchFilter, LowerCase(Item.CommandLine)) > 0) or
          (Pos(FSearchFilter, LowerCase(Item.CompanyName)) > 0) or
-         (Pos(FSearchFilter, LowerCase(Item.Description)) > 0) then
+         (Pos(FSearchFilter, LowerCase(Item.Description)) > 0) or
+         (Pos(FSearchFilter, LowerCase(Item.IntegrityLevel)) > 0) then
       begin
         FFilteredProcesses.Add(Item);
       end;
@@ -1188,6 +1213,177 @@ begin
     else if Assigned(FOnStatusMessage) then
       FOnStatusMessage(Format('Failed to update startup entry "%s" (Administrator privileges may be required).', [AItem.Name]), True);
   end;
+end;
+
+{ Deep process inspection commands }
+
+function TMainViewModel.CollectProcessEnvironment(const AProcessId: Cardinal): TProcessEnvInfo;
+begin
+  if Assigned(FMetricsService) then
+    Result := FMetricsService.CollectProcessEnvironment(AProcessId)
+  else
+    Result := TProcessEnvInfo.Create;
+end;
+
+function TMainViewModel.CollectProcessSecurity(const AProcessId: Cardinal): TProcessSecurityInfo;
+begin
+  if Assigned(FMetricsService) then
+    Result := FMetricsService.CollectProcessSecurity(AProcessId)
+  else
+    Result := TProcessSecurityInfo.Create;
+end;
+
+function TMainViewModel.CollectProcessThreads(const AProcessId: Cardinal): TThreadInfoList;
+var
+  I: Integer;
+  Item: TThreadInfoItem;
+  CurTick, ElapsedMs: UInt64;
+  PrevTotal, Delta: Int64;
+begin
+  if not Assigned(FMetricsService) then
+  begin
+    Result := TThreadInfoList.Create(True);
+    Exit;
+  end;
+
+  Result := FMetricsService.CollectProcessThreads(AProcessId);
+
+  // Switching to another process resets the per-TID delta baseline
+  if AProcessId <> FThreadListPid then
+  begin
+    FThreadListPid := AProcessId;
+    FThreadPrevTimes.Clear;
+    FThreadHasSample := False;
+  end;
+
+  CurTick := GetTickCount64;
+  ElapsedMs := 0;
+  if FThreadHasSample and (CurTick > FThreadPrevTick) then
+    ElapsedMs := CurTick - FThreadPrevTick;
+
+  for I := 0 to Result.Count - 1 do
+  begin
+    Item := Result[I];
+    Item.CpuPercent := 0.0;
+    if (ElapsedMs > 0) and FThreadPrevTimes.TryGetValue(Item.ThreadId, PrevTotal) then
+    begin
+      Delta := Item.TotalTime - PrevTotal;
+      if Delta > 0 then
+      begin
+        // Share of one logical core over the sampling window (100ns units)
+        Item.CpuPercent := (Delta / (Int64(ElapsedMs) * 10000.0)) * 100.0;
+        if Item.CpuPercent > 100.0 then Item.CpuPercent := 100.0;
+      end;
+    end;
+  end;
+
+  FThreadPrevTimes.Clear;
+  for I := 0 to Result.Count - 1 do
+    FThreadPrevTimes.AddOrSetValue(Result[I].ThreadId, Result[I].TotalTime);
+  FThreadPrevTick := CurTick;
+  FThreadHasSample := True;
+end;
+
+function TMainViewModel.SuspendResumeThread(const AProcessId, AThreadId: Cardinal; const ASuspend: Boolean): Boolean;
+begin
+  Result := False;
+  if Assigned(FMetricsService) then
+  begin
+    Result := FMetricsService.SuspendResumeThreadById(AProcessId, AThreadId, ASuspend);
+    if Result then
+    begin
+      if Assigned(FOnStatusMessage) then
+      begin
+        if ASuspend then
+          FOnStatusMessage(Format('Thread %d suspended.', [AThreadId]), False)
+        else
+          FOnStatusMessage(Format('Thread %d resumed.', [AThreadId]), False);
+      end;
+    end
+    else if Assigned(FOnStatusMessage) then
+    begin
+      if ASuspend then
+        FOnStatusMessage(Format('Failed to suspend thread %d (Access Denied or Protected).', [AThreadId]), True)
+      else
+        FOnStatusMessage(Format('Failed to resume thread %d (Access Denied or Protected).', [AThreadId]), True);
+    end;
+  end;
+end;
+
+function TMainViewModel.TrimProcessWorkingSet(const AProcessId: Cardinal; const AProcessName: string): Boolean;
+var
+  BeforeMB, AfterMB, FreedMB: Double;
+begin
+  Result := False;
+  if Assigned(FMetricsService) then
+  begin
+    Result := FMetricsService.TrimProcessWorkingSet(AProcessId, BeforeMB, AfterMB, FreedMB);
+    if Result then
+    begin
+      if Assigned(FOnStatusMessage) then
+        FOnStatusMessage(Format('"%s" (PID %d) working set trimmed: %.1f MB → %.1f MB (%.1f MB reclaimed).',
+          [AProcessName, AProcessId, BeforeMB, AfterMB, FreedMB]), False);
+    end
+    else if Assigned(FOnStatusMessage) then
+      FOnStatusMessage(Format('Failed to trim working set for PID %d (Access Denied or System Protected).', [AProcessId]), True);
+  end;
+end;
+
+function TMainViewModel.GetProcessIoPriority(const AProcessId: Cardinal): Integer;
+begin
+  if Assigned(FMetricsService) then
+    Result := FMetricsService.GetProcessIoPriorityById(AProcessId)
+  else
+    Result := -1;
+end;
+
+function TMainViewModel.SetProcessIoPriority(const AProcessId: Cardinal; const AIoPriority: Integer; const ANameText: string): Boolean;
+begin
+  Result := False;
+  if Assigned(FMetricsService) then
+  begin
+    Result := FMetricsService.SetProcessIoPriorityById(AProcessId, AIoPriority);
+    if Result then
+    begin
+      if Assigned(FOnStatusMessage) then
+        FOnStatusMessage(Format('Process %d I/O priority set to %s.', [AProcessId, ANameText]), False);
+    end
+    else if Assigned(FOnStatusMessage) then
+      FOnStatusMessage(Format('Failed to set I/O priority for PID %d (Access Denied or System Protected).', [AProcessId]), True);
+  end;
+end;
+
+function TMainViewModel.GetProcessPagePriority(const AProcessId: Cardinal): Integer;
+begin
+  if Assigned(FMetricsService) then
+    Result := FMetricsService.GetProcessPagePriorityById(AProcessId)
+  else
+    Result := -1;
+end;
+
+function TMainViewModel.SetProcessPagePriority(const AProcessId: Cardinal; const APagePriority: Integer): Boolean;
+begin
+  Result := False;
+  if Assigned(FMetricsService) then
+  begin
+    Result := FMetricsService.SetProcessPagePriorityById(AProcessId, APagePriority);
+    if Result then
+    begin
+      if Assigned(FOnStatusMessage) then
+        FOnStatusMessage(Format('Process %d memory page priority set to %d.', [AProcessId, APagePriority]), False);
+    end
+    else if Assigned(FOnStatusMessage) then
+      FOnStatusMessage(Format('Failed to set page priority for PID %d (Access Denied or System Protected).', [AProcessId]), True);
+  end;
+end;
+
+function TMainViewModel.GetAggregateDiskIoKBps: Single;
+var
+  I: Integer;
+begin
+  Result := 0.0;
+  for I := 0 to FProcesses.Count - 1 do
+    Result := Result + FProcesses[I].DiskIoKBps;
 end;
 
 end.

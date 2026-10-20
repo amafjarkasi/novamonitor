@@ -60,6 +60,8 @@ type
     Description: string;
     CompanyName: string;
     FileVersion: string;
+    IntegrityLevel: string;
+    Elevated: Boolean;
   end;
 
   /// <summary>
@@ -140,6 +142,16 @@ type
     function GetProcessModules(const AProcessId: Cardinal): TStringList;
     function CollectStartupEntries: TStartupList;
     function SetStartupEntryEnabled(const AItem: TStartupItem; const AEnable: Boolean): Boolean;
+    function CollectProcessEnvironment(const AProcessId: Cardinal): TProcessEnvInfo;
+    function CollectProcessSecurity(const AProcessId: Cardinal): TProcessSecurityInfo;
+    function CollectProcessThreads(const AProcessId: Cardinal): TThreadInfoList;
+    function SuspendResumeThreadById(const AProcessId, AThreadId: Cardinal; const ASuspend: Boolean): Boolean;
+    function TrimProcessWorkingSet(const AProcessId: Cardinal;
+      out ABeforeMB, AAfterMB, AFreedMB: Double): Boolean;
+    function GetProcessIoPriorityById(const AProcessId: Cardinal): Integer;
+    function SetProcessIoPriorityById(const AProcessId: Cardinal; const AIoPriority: Integer): Boolean;
+    function GetProcessPagePriorityById(const AProcessId: Cardinal): Integer;
+    function SetProcessPagePriorityById(const AProcessId: Cardinal; const APagePriority: Integer): Boolean;
   end;
 
 implementation
@@ -499,6 +511,68 @@ type
   end;
   PNtUnicodeString = ^TNtUnicodeString;
 
+  // PROCESS_BASIC_INFORMATION (class 0): only PebBaseAddress is consumed, but
+  // the full 48/24-byte layout is declared so NtQueryInformationProcess
+  // accepts the buffer length
+  TNtProcessBasicInfo = packed record
+    ExitStatus: LongInt;
+    {$IFDEF CPU64}
+    Padding1: DWORD;
+    {$ENDIF}
+    PebBaseAddress: Pointer;
+    AffinityMask: NativeUInt;
+    BasePriority: LongInt;
+    {$IFDEF CPU64}
+    Padding2: DWORD;
+    {$ENDIF}
+    UniqueProcessId: NativeUInt;
+    Reserved3: Pointer;
+  end;
+
+  // SYSTEM_THREAD_INFORMATION embedded in the SystemProcessInformation
+  // thread array (80 bytes on x64 / 56 on x86 under natural alignment)
+  TNtSysThreadInfo = record
+    KernelTime: Int64;
+    UserTime: Int64;
+    CreateTime: Int64;
+    WaitTime: DWORD;
+    StartAddress: Pointer;
+    ProcessId: NativeUInt;
+    ThreadId: NativeUInt;
+    Priority: LongInt;
+    BasePriority: LongInt;
+    ContextSwitches: DWORD;
+    ThreadState: DWORD;
+    WaitReason: DWORD;
+    {$IFDEF CPU64}
+    Filler: DWORD;
+    {$ENDIF}
+  end;
+
+  // Entry header + inline thread array: the compiler lays Threads[0] exactly
+  // where the kernel puts the thread array, including any tail padding
+  TNtProcessInfoWithThreads = record
+    Fixed: TNtSystemProcessInfo;
+    Threads: array[0..0] of TNtSysThreadInfo;
+  end;
+  PNtProcessInfoWithThreads = ^TNtProcessInfoWithThreads;
+
+  TLuidRec = packed record
+    LowPart: DWORD;
+    HighPart: LongInt;
+  end;
+
+  TLuidAttrRec = packed record
+    Luid: TLuidRec;
+    Attributes: DWORD;
+  end;
+
+  TNtTokenPrivileges = packed record
+    PrivilegeCount: DWORD;
+    Privileges: array[0..0] of TLuidAttrRec;
+  end;
+  PNtTokenPrivileges = ^TNtTokenPrivileges;
+
   TLangAndCodePage = packed record
     wLanguage: Word;
     wCodePage: Word;
@@ -601,6 +675,7 @@ const
   // Local declarations shadow Windows-unit constants where present
   PROCESS_QUERY_LIMITED_INFORMATION = $1000;
   PROCESS_SET_INFORMATION = $0200;
+  PROCESS_SET_QUOTA = $0100;
   PROCESS_SUSPEND_RESUME = $0800;
   PROCESS_QUERY_INFORMATION = $0400;
   PROCESS_VM_READ = $0010;
@@ -608,6 +683,19 @@ const
   SystemProcessInformation = 5;
   SystemProcessorPerformanceInformation = 8;
   ProcessCommandLineInformation = 60;
+  ProcessBasicInfoClass = 0;
+  ProcessWow64InfoClass = 26;
+  ProcessIoPriorityClass = 33;
+  ProcessPagePriorityClass = 39;
+  // TOKEN_INFORMATION_CLASS values (empirically verified: TokenUser = 1,
+  // TokenGroups = 2, TokenPrivileges = 3, TokenElevation = 20, integrity = 25)
+  NtTokenPrivilegesClass = 3;
+  NtTokenElevationClass = 20;
+  NtTokenVirtualizationAllowedClass = 23;
+  NtTokenVirtualizationEnabledClass = 24;
+  NtTokenIntegrityLevelClass = 25;
+  SePrivEnabledByDefault = 1;
+  SePrivEnabled = 2;
   STATUS_INFO_LENGTH_MISMATCH = LongInt($C0000004);
   STATUS_BUFFER_TOO_SMALL = LongInt($C0000023);
   STATUS_BUFFER_OVERFLOW = LongInt($80000005);
@@ -667,6 +755,10 @@ function Process32Next(hSnapshot: THandle; var lpEntry: TWinProcessEntry32): BOO
 function QueryFullProcessImageNameW(hProcess: THandle; dwFlags: DWORD; lpExeName: PWideChar; var lpdwSize: DWORD): BOOL; stdcall; external 'kernel32.dll' name 'QueryFullProcessImageNameW';
 function IsWow64Process(hProcess: THandle; var Wow64Process: BOOL): BOOL; stdcall; external 'kernel32.dll' name 'IsWow64Process';
 function GetProcessIoCounters(hProcess: THandle; var lpIoCounters: TWinIoCounters): BOOL; stdcall; external 'kernel32.dll' name 'GetProcessIoCounters';
+// Win10 1607+ thread naming API; description buffer is LocalFree'd
+function GetThreadDescription(hThread: THandle; var ppszThreadDescription: PWideChar): HResult; stdcall; external 'kernel32.dll' name 'GetThreadDescription';
+function QueryThreadCycleTime(ThreadHandle: THandle; var CycleTime: UInt64): BOOL; stdcall; external 'kernel32.dll' name 'QueryThreadCycleTime';
+function EmptyWorkingSet(hProcess: THandle): BOOL; stdcall; external 'psapi.dll' name 'EmptyWorkingSet';
 function GetPriorityClass(hProcess: THandle): DWORD; stdcall; external 'kernel32.dll' name 'GetPriorityClass';
 function SetPriorityClass(hProcess: THandle; dwPriorityClass: DWORD): BOOL; stdcall; external 'kernel32.dll' name 'SetPriorityClass';
 function GetProcessAffinityMask(hProcess: THandle; var lpProcessAffinityMask, lpSystemAffinityMask: NativeUInt): BOOL; stdcall; external 'kernel32.dll' name 'GetProcessAffinityMask';
@@ -678,12 +770,14 @@ function VerQueryValueW(pBlock: Pointer; lpSubBlock: PWideChar; var lplpBuffer: 
 function ShellExecuteExW(var lpExecInfo: TShellExecuteInfoW): BOOL; stdcall; external 'shell32.dll' name 'ShellExecuteExW';
 function NtQuerySystemInformation(SystemInformationClass: DWORD; SystemInformation: Pointer; SystemInformationLength: DWORD; var ReturnLength: DWORD): LongInt; stdcall; external 'ntdll.dll' name 'NtQuerySystemInformation';
 function NtQueryInformationProcess(ProcessHandle: THandle; ProcessInformationClass: DWORD; ProcessInformation: Pointer; ProcessInformationLength: DWORD; var ReturnLength: DWORD): LongInt; stdcall; external 'ntdll.dll' name 'NtQueryInformationProcess';
+function NtSetInformationProcess(ProcessHandle: THandle; ProcessInformationClass: DWORD; ProcessInformation: Pointer; ProcessInformationLength: DWORD; ReturnLength: PDWORD): LongInt; stdcall; external 'ntdll.dll' name 'NtSetInformationProcess';
 function NtSuspendProcess(ProcessHandle: THandle): LongInt; stdcall; external 'ntdll.dll' name 'NtSuspendProcess';
 function NtResumeProcess(ProcessHandle: THandle): LongInt; stdcall; external 'ntdll.dll' name 'NtResumeProcess';
 
 function OpenProcessToken(ProcessHandle: THandle; DesiredAccess: DWORD; var TokenHandle: THandle): BOOL; stdcall; external 'advapi32.dll' name 'OpenProcessToken';
 function GetTokenInformation(TokenHandle: THandle; TokenInformationClass: DWORD; TokenInformation: Pointer; TokenInformationLength: DWORD; var ReturnLength: DWORD): BOOL; stdcall; external 'advapi32.dll' name 'GetTokenInformation';
 function LookupAccountSidW(lpSystemName: PWideChar; Sid: Pointer; Name: PWideChar; var cchName: DWORD; ReferencedDomainName: PWideChar; var cchReferencedDomainName: DWORD; var peUse: DWORD): BOOL; stdcall; external 'advapi32.dll' name 'LookupAccountSidW';
+function LookupPrivilegeNameW(lpSystemName: PWideChar; lpLuid: Pointer; lpName: PWideChar; var cchName: DWORD): BOOL; stdcall; external 'advapi32.dll' name 'LookupPrivilegeNameW';
 
 function OpenSCManagerW(lpMachineName, lpDatabaseName: PWideChar; dwDesiredAccess: DWORD): THandle; stdcall; external 'advapi32.dll' name 'OpenSCManagerW';
 function OpenServiceW(hSCManager: THandle; lpServiceName: PWideChar; dwDesiredAccess: DWORD): THandle; stdcall; external 'advapi32.dll' name 'OpenServiceW';
@@ -885,6 +979,217 @@ begin
     end;
   finally
     FreeMem(Buf);
+  end;
+end;
+
+function ReadRemoteBuf(const AProcess: THandle; const AAddress: NativeUInt;
+  ABuf: Pointer; const AByteCount: NativeUInt): Boolean;
+var
+  BytesRead: PtrUInt;
+begin
+  Result := False;
+  if (AAddress = 0) or (ABuf = nil) or (AByteCount = 0) then Exit;
+  BytesRead := 0;
+  if ReadProcessMemory(AProcess, Pointer(AAddress), ABuf, AByteCount, @BytesRead) then
+    Result := (BytesRead = AByteCount);
+end;
+
+// Reads a remote UNICODE_STRING (target-bitness aware) and returns its contents
+function ReadRemoteUnicodeString(const AProcess: THandle; const AStrAddr: NativeUInt;
+  const ATargetIs32: Boolean): string;
+var
+  Hdr: array[0..15] of Byte;
+  StrLen: Word;
+  BufAddr: NativeUInt;
+  WS: WideString;
+begin
+  Result := '';
+  if AStrAddr = 0 then Exit;
+  StrLen := 0;
+  BufAddr := 0;
+  if ATargetIs32 then
+  begin
+    if not ReadRemoteBuf(AProcess, AStrAddr, @Hdr[0], 8) then Exit;
+    Move(Hdr[0], StrLen, 2);
+    BufAddr := PCardinal(@Hdr[4])^;
+  end
+  else
+  begin
+    if not ReadRemoteBuf(AProcess, AStrAddr, @Hdr[0], 16) then Exit;
+    Move(Hdr[0], StrLen, 2);
+    BufAddr := PNativeUInt(@Hdr[8])^;
+  end;
+  if (StrLen = 0) or (StrLen and 1 <> 0) or (BufAddr = 0) or (StrLen > 32768) then Exit;
+  SetLength(WS, StrLen div 2);
+  if not ReadRemoteBuf(AProcess, BufAddr, @WS[1], StrLen) then Exit;
+  Result := string(WS);
+end;
+
+// Walks the remote environment block (null-separated wide strings, terminated
+// by an empty string) in chunks and appends NAME=value entries to AList
+function CollectRemoteEnvironment(const AProcess: THandle; const AEnvAddr: NativeUInt;
+  const AList: TStringList): Boolean;
+const
+  ChunkW = 2048;   // wide chars per remote read
+  MaxW = 131072;   // 256 KB hard cap against runaway blocks
+var
+  Env, WPiece: WideString;
+  BytesRead: PtrUInt;
+  TotalW, GotW, I, PieceStart: Integer;
+  TerminatorSeen: Boolean;
+begin
+  Result := False;
+  if (AEnvAddr = 0) or (AList = nil) then Exit;
+  TotalW := 0;
+  PieceStart := 1;
+  TerminatorSeen := False;
+  while (TotalW < MaxW) and not TerminatorSeen do
+  begin
+    SetLength(Env, TotalW + ChunkW);
+    BytesRead := 0;
+    if not ReadProcessMemory(AProcess, Pointer(AEnvAddr + UInt64(TotalW) * 2),
+        @Env[TotalW + 1], ChunkW * 2, @BytesRead) then
+    begin
+      GotW := Integer(BytesRead div 2);
+      if GotW <= 0 then Break; // unreadable tail: keep entries gathered so far
+    end
+    else
+      GotW := ChunkW;
+
+    I := TotalW + 1;
+    while I <= TotalW + GotW do
+    begin
+      if Env[I] = #0 then
+      begin
+        if I = PieceStart then
+        begin
+          TerminatorSeen := True; // empty string terminates the block
+          Break;
+        end;
+        SetString(WPiece, PWideChar(@Env[PieceStart]), I - PieceStart);
+        AList.Add(string(WPiece));
+        PieceStart := I + 1;
+      end;
+      Inc(I);
+    end;
+
+    TotalW := TotalW + GotW;
+    if GotW < ChunkW then Break; // short read: end of mapped environment
+  end;
+  Result := AList.Count > 0;
+end;
+
+function SidLastRid(const ASid: Pointer): Cardinal;
+var
+  SubCount: Byte;
+begin
+  Result := 0;
+  if ASid = nil then Exit;
+  SubCount := PByte(PByte(ASid) + 1)^;
+  if SubCount = 0 then Exit;
+  Result := PCardinal(PByte(ASid) + 8 + (SubCount - 1) * 4)^;
+end;
+
+function IntegrityRidToText(const ARid: Cardinal): string;
+begin
+  case ARid of
+    $0000: Result := 'Untrusted';
+    $1000: Result := 'Low';
+    $2000: Result := 'Medium';
+    $2100: Result := 'Medium Plus';
+    $3000: Result := 'High';
+    $4000: Result := 'System';
+    $5000: Result := 'Protected';
+    $6000: Result := 'Secure';
+  else
+    if ARid < $1000 then Result := 'Untrusted'
+    else if ARid < $2000 then Result := 'Low'
+    else if ARid < $3000 then Result := 'Medium'
+    else if ARid < $4000 then Result := 'High'
+    else if ARid < $5000 then Result := 'System'
+    else Result := Format('Unknown (0x%x)', [ARid]);
+  end;
+end;
+
+// Lightweight token query used by the per-process metadata cache:
+// integrity level text + UAC elevation flag only
+procedure QueryTokenBasics(const AProcessHandle: THandle;
+  out AIntegrityText: string; out AElevated: Boolean);
+var
+  HTok: THandle;
+  RetLen, DW: DWORD;
+  Buf: Pointer;
+begin
+  AIntegrityText := '';
+  AElevated := False;
+  if not OpenProcessToken(AProcessHandle, TOKEN_QUERY, HTok) then Exit;
+  try
+    RetLen := 0;
+    GetTokenInformation(HTok, NtTokenIntegrityLevelClass, nil, 0, RetLen);
+    if RetLen >= 8 then
+    begin
+      GetMem(Buf, RetLen);
+      try
+        if GetTokenInformation(HTok, NtTokenIntegrityLevelClass, Buf, RetLen, RetLen) then
+          AIntegrityText := IntegrityRidToText(SidLastRid(PPointer(Buf)^));
+      finally
+        FreeMem(Buf);
+      end;
+    end;
+    RetLen := 0;
+    DW := 0;
+    if GetTokenInformation(HTok, NtTokenElevationClass, @DW, SizeOf(DWORD), RetLen) then
+      AElevated := DW <> 0;
+  finally
+    CloseHandle(HTok);
+  end;
+end;
+
+function ThreadStateToText(const AState: DWORD): string;
+begin
+  case AState of
+    0: Result := 'Initialized';
+    1: Result := 'Ready';
+    2: Result := 'Running';
+    3: Result := 'Standby';
+    4: Result := 'Terminated';
+    5: Result := 'Waiting';
+    6: Result := 'Transition';
+    7: Result := 'Error';
+  else
+    Result := Format('State %d', [AState]);
+  end;
+end;
+
+function WaitReasonToText(const AReason: DWORD): string;
+begin
+  case AReason of
+    0: Result := 'Executive';
+    1: Result := 'Free Page';
+    2: Result := 'Page In';
+    3: Result := 'Pool Allocation';
+    4: Result := 'Delay Execution';
+    5: Result := 'Suspended';
+    6: Result := 'User Request';
+    7: Result := 'WrExecutive';
+    8: Result := 'WrFreePage';
+    9: Result := 'WrPageIn';
+    10: Result := 'WrPoolAllocation';
+    11: Result := 'WrDelayExecution';
+    12: Result := 'WrSuspended';
+    13: Result := 'WrUserRequest';
+    14: Result := 'WrEventPair';
+    15: Result := 'WrQueue';
+    16: Result := 'WrLpcReceive';
+    17: Result := 'WrLpcReply';
+    18: Result := 'WrVirtualMemory';
+    19: Result := 'WrPageOut';
+    20: Result := 'WrRendezvous';
+    21: Result := 'WrExecutionChannel';
+    22: Result := 'WrAlertByThreadId';
+    23: Result := 'WrDeferredPreempt';
+  else
+    Result := Format('Wr%u', [AReason]);
   end;
 end;
 
@@ -1353,6 +1658,8 @@ begin
               Meta.Description := '';
               Meta.CompanyName := '';
               Meta.FileVersion := '';
+              Meta.IntegrityLevel := '';
+              Meta.Elevated := False;
 
               PathLen := 512;
               SetLength(PathBuf, PathLen);
@@ -1372,6 +1679,7 @@ begin
               if Meta.UserName = '' then
                 Meta.UserName := 'NT AUTHORITY\SYSTEM';
               Meta.CommandLine := GetProcessCommandLine(ProcHandle);
+              QueryTokenBasics(ProcHandle, Meta.IntegrityLevel, Meta.Elevated);
               if Meta.ImagePath <> '' then
                 GetExecutableVersionMeta(Meta.ImagePath, Meta.Description, Meta.CompanyName, Meta.FileVersion)
               else
@@ -1391,6 +1699,8 @@ begin
               Meta.Architecture := '64-bit';
               Meta.CompanyName := 'Microsoft Corporation';
               Meta.FileVersion := 'OS Kernel';
+              Meta.IntegrityLevel := '';
+              Meta.Elevated := False;
               if ProcId = 4 then
               begin
                 Meta.ImagePath := 'ntoskrnl.exe';
@@ -1463,6 +1773,8 @@ begin
           Item.UserObjects := UserCnt;
           Item.DiskIoKBps := IoKBps;
           Item.PriorityText := PriorityClassToStr(PrioClass, BasePrio);
+          Item.IntegrityLevel := Meta.IntegrityLevel;
+          Item.Elevated := Meta.Elevated;
 
         // Keep largest memory consumers first; sorted insertion instead of a
         // comparer callback (FPC 3.2 stable has no anonymous methods)
@@ -2434,6 +2746,465 @@ begin
   Result.Add(TServiceItem.Create('WinDefend', 'Microsoft Defender Antivirus Service', 2140, 4, $20, 'Running'));
   Result.Add(TServiceItem.Create('wuauserv', 'Windows Update', 3110, 4, $20, 'Running'));
   Result.Add(TServiceItem.Create('Spooler', 'Print Spooler', 0, 1, $10, 'Stopped'));
+end;
+{$ENDIF}
+
+function TMetricsService.CollectProcessEnvironment(const AProcessId: Cardinal): TProcessEnvInfo;
+{$IFDEF MSWINDOWS}
+var
+  HProc: THandle;
+  Basic: TNtProcessBasicInfo;
+  Wow64: NativeUInt;
+  IsWow64: BOOL;
+  TargetIs32: Boolean;
+  PebAddr, ParamsAddr, EnvAddr: NativeUInt;
+  RetLen: DWORD;
+begin
+  Result := TProcessEnvInfo.Create;
+  if AProcessId <= 4 then Exit;
+
+  HProc := OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION or PROCESS_VM_READ, False, AProcessId);
+  if HProc = 0 then
+    HProc := OpenProcess(PROCESS_QUERY_INFORMATION or PROCESS_VM_READ, False, AProcessId);
+  if HProc = 0 then Exit;
+  try
+    // Native PEB for same-bitness targets; WOW64 PEB (class 26) for 32-bit
+    // processes so the parameter block layout always matches the target
+    TargetIs32 := False;
+    IsWow64 := False;
+    if IsWow64Process(HProc, IsWow64) then
+      TargetIs32 := IsWow64;
+
+    PebAddr := 0;
+    RetLen := 0;
+    if TargetIs32 then
+    begin
+      Wow64 := 0;
+      if NtQueryInformationProcess(HProc, ProcessWow64InfoClass, @Wow64, SizeOf(NativeUInt), RetLen) = 0 then
+        PebAddr := Wow64;
+    end
+    else
+    begin
+      FillChar(Basic, SizeOf(Basic), 0);
+      if NtQueryInformationProcess(HProc, ProcessBasicInfoClass, @Basic, SizeOf(TNtProcessBasicInfo), RetLen) = 0 then
+        PebAddr := NativeUInt(Basic.PebBaseAddress);
+    end;
+    if PebAddr = 0 then Exit;
+
+    // PEB -> RTL_USER_PROCESS_PARAMETERS (offsets differ per target bitness)
+    ParamsAddr := 0;
+    if TargetIs32 then
+      ReadRemoteBuf(HProc, PebAddr + $10, @ParamsAddr, 4)
+    else
+      ReadRemoteBuf(HProc, PebAddr + $20, @ParamsAddr, SizeOf(Pointer));
+    if ParamsAddr = 0 then Exit;
+
+    EnvAddr := 0;
+    if TargetIs32 then
+    begin
+      Result.WorkingDirectory := ReadRemoteUnicodeString(HProc, ParamsAddr + $20, True);
+      ReadRemoteBuf(HProc, ParamsAddr + $44, @EnvAddr, 4);
+    end
+    else
+    begin
+      Result.WorkingDirectory := ReadRemoteUnicodeString(HProc, ParamsAddr + $38, False);
+      ReadRemoteBuf(HProc, ParamsAddr + $80, @EnvAddr, SizeOf(Pointer));
+    end;
+
+    CollectRemoteEnvironment(HProc, EnvAddr, Result.Variables);
+    Result.Available := (Result.WorkingDirectory <> '') or (Result.Variables.Count > 0);
+  finally
+    CloseHandle(HProc);
+  end;
+end;
+{$ELSE}
+begin
+  Result := TProcessEnvInfo.Create;
+end;
+{$ENDIF}
+
+function TMetricsService.CollectProcessSecurity(const AProcessId: Cardinal): TProcessSecurityInfo;
+{$IFDEF MSWINDOWS}
+var
+  HProc, HTok: THandle;
+  RetLen, DW, Rid: Cardinal;
+  Buf: Pointer;
+  Priv: PNtTokenPrivileges;
+  LuidAttr: ^TLuidAttrRec;
+  I: Integer;
+  NameLen: DWORD;
+  NameBuf: array[0..259] of WideChar;
+  AttrSuffix, PrivLine: string;
+  WS: WideString;
+begin
+  Result := TProcessSecurityInfo.Create;
+  if AProcessId <= 4 then Exit;
+
+  HProc := OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, AProcessId);
+  if HProc = 0 then
+    HProc := OpenProcess(PROCESS_QUERY_INFORMATION, False, AProcessId);
+  if HProc = 0 then Exit;
+  try
+    if not OpenProcessToken(HProc, TOKEN_QUERY, HTok) then Exit;
+    try
+      // Integrity level (TOKEN_MANDATORY_LABEL -> SID -> last sub-authority RID)
+      RetLen := 0;
+      GetTokenInformation(HTok, NtTokenIntegrityLevelClass, nil, 0, RetLen);
+      if RetLen >= SizeOf(Pointer) then
+      begin
+        GetMem(Buf, RetLen);
+        try
+          if GetTokenInformation(HTok, NtTokenIntegrityLevelClass, Buf, RetLen, RetLen) then
+          begin
+            Rid := SidLastRid(PPointer(Buf)^);
+            Result.IntegrityRid := Rid;
+            Result.IntegrityLevel := IntegrityRidToText(Rid);
+          end;
+        finally
+          FreeMem(Buf);
+        end;
+      end;
+
+      RetLen := 0;
+      DW := 0;
+      if GetTokenInformation(HTok, NtTokenElevationClass, @DW, SizeOf(DWORD), RetLen) then
+        Result.Elevated := DW <> 0;
+
+      RetLen := 0;
+      DW := 0;
+      if GetTokenInformation(HTok, NtTokenVirtualizationAllowedClass, @DW, SizeOf(DWORD), RetLen) then
+        Result.VirtualizationAllowed := DW <> 0;
+
+      RetLen := 0;
+      DW := 0;
+      if GetTokenInformation(HTok, NtTokenVirtualizationEnabledClass, @DW, SizeOf(DWORD), RetLen) then
+        Result.VirtualizationEnabled := DW <> 0;
+
+      // Privilege set with enabled/disabled state
+      RetLen := 0;
+      GetTokenInformation(HTok, NtTokenPrivilegesClass, nil, 0, RetLen);
+      if RetLen >= SizeOf(DWORD) then
+      begin
+        GetMem(Buf, RetLen);
+        try
+          if GetTokenInformation(HTok, NtTokenPrivilegesClass, Buf, RetLen, RetLen) then
+          begin
+            Priv := PNtTokenPrivileges(Buf);
+            if Priv^.PrivilegeCount > 128 then
+              Priv^.PrivilegeCount := 128;
+            for I := 0 to Integer(Priv^.PrivilegeCount) - 1 do
+            begin
+              LuidAttr := Pointer(PByte(@Priv^.Privileges[0]) + I * SizeOf(TLuidAttrRec));
+              NameLen := 256;
+              FillChar(NameBuf, SizeOf(NameBuf), 0);
+              if LookupPrivilegeNameW(nil, @LuidAttr^.Luid, @NameBuf[0], NameLen) then
+              begin
+                SetString(WS, PWideChar(@NameBuf[0]), NameLen);
+                if (LuidAttr^.Attributes and SePrivEnabled) <> 0 then
+                  AttrSuffix := 'Enabled'
+                else if (LuidAttr^.Attributes and SePrivEnabledByDefault) <> 0 then
+                  AttrSuffix := 'Enabled (default)'
+                else
+                  AttrSuffix := 'Disabled';
+                PrivLine := string(WS);
+                Result.Privileges.Add(Format('%-28s %s', [PrivLine, AttrSuffix]));
+              end;
+            end;
+          end;
+        finally
+          FreeMem(Buf);
+        end;
+      end;
+
+      Result.Available := True;
+    finally
+      CloseHandle(HTok);
+    end;
+  finally
+    CloseHandle(HProc);
+  end;
+end;
+{$ELSE}
+begin
+  Result := TProcessSecurityInfo.Create;
+end;
+{$ENDIF}
+
+function TMetricsService.CollectProcessThreads(const AProcessId: Cardinal): TThreadInfoList;
+{$IFDEF MSWINDOWS}
+var
+  BufSize, RetLen: DWORD;
+  Buf: Pointer;
+  Entry: PNtProcessInfoWithThreads;
+  Item: TThreadInfoItem;
+  I: Integer;
+  Status: LongInt;
+  HThread: THandle;
+  Descr: PWideChar;
+  Cycles: UInt64;
+  FT, LocalFT: TFileTime;
+  ST: TSystemTime;
+begin
+  Result := TThreadInfoList.Create(True);
+  BufSize := 1024 * 1024;
+  RetLen := 0;
+  GetMem(Buf, BufSize);
+  try
+    Status := NtQuerySystemInformation(SystemProcessInformation, Buf, BufSize, RetLen);
+    if (Status = STATUS_INFO_LENGTH_MISMATCH) and (RetLen > BufSize) then
+    begin
+      FreeMem(Buf);
+      BufSize := RetLen + 65536;
+      GetMem(Buf, BufSize);
+      Status := NtQuerySystemInformation(SystemProcessInformation, Buf, BufSize, RetLen);
+    end;
+    if Status <> 0 then Exit;
+
+    Entry := PNtProcessInfoWithThreads(Buf);
+    while True do
+    begin
+      if Cardinal(Entry^.Fixed.UniqueProcessId) = AProcessId then
+      begin
+        for I := 0 to Integer(Entry^.Fixed.NumberOfThreads) - 1 do
+        begin
+          if Cardinal(Entry^.Threads[I].ThreadId) = 0 then Continue;
+          Item := TThreadInfoItem.Create;
+          Item.ThreadId := Cardinal(Entry^.Threads[I].ThreadId);
+          Item.StateText := ThreadStateToText(Entry^.Threads[I].ThreadState);
+          Item.WaitReasonText := WaitReasonToText(Entry^.Threads[I].WaitReason);
+          Item.Suspended := (Entry^.Threads[I].ThreadState = 5) and
+            (Entry^.Threads[I].WaitReason in [5, 12]);
+          Item.Priority := Entry^.Threads[I].Priority;
+          Item.BasePriority := Entry^.Threads[I].BasePriority;
+          Item.ContextSwitches := Entry^.Threads[I].ContextSwitches;
+          Item.StartAddress := NativeUInt(Entry^.Threads[I].StartAddress);
+          Item.KernelTimeMs := UInt64(Entry^.Threads[I].KernelTime) div 10000;
+          Item.UserTimeMs := UInt64(Entry^.Threads[I].UserTime) div 10000;
+          Item.TotalTime := Entry^.Threads[I].KernelTime + Entry^.Threads[I].UserTime;
+
+          if Entry^.Threads[I].CreateTime <> 0 then
+          begin
+            FT.dwLowDateTime := DWORD(Int64(Entry^.Threads[I].CreateTime) and $FFFFFFFF);
+            FT.dwHighDateTime := DWORD(UInt64(Entry^.Threads[I].CreateTime) shr 32);
+            if FileTimeToLocalFileTime(FT, LocalFT) and FileTimeToSystemTime(LocalFT, ST) then
+              Item.CreateTime := SystemTimeToDateTime(ST);
+          end;
+
+          // Thread name (Win10+) and cycle counter in one handle open
+          HThread := OpenThread(THREAD_QUERY_LIMITED_INFORMATION or THREAD_QUERY_INFORMATION,
+            False, Item.ThreadId);
+          if HThread <> 0 then
+          begin
+            try
+              Cycles := 0;
+              if QueryThreadCycleTime(HThread, Cycles) then
+                Item.Cycles := Cycles;
+              Descr := nil;
+              if GetThreadDescription(HThread, Descr) = 0 then
+              begin
+                if Assigned(Descr) and (Descr^ <> #0) then
+                  Item.Name := WideCharToString(Descr);
+                if Assigned(Descr) then
+                  LocalFree(THandle(Descr));
+              end;
+            finally
+              CloseHandle(HThread);
+            end;
+          end;
+
+          Result.Add(Item);
+        end;
+        Break; // matched the requested PID
+      end;
+      if Entry^.Fixed.NextEntryOffset = 0 then Break;
+      Entry := PNtProcessInfoWithThreads(PByte(Entry) + Entry^.Fixed.NextEntryOffset);
+    end;
+  finally
+    FreeMem(Buf);
+  end;
+end;
+{$ELSE}
+begin
+  Result := TThreadInfoList.Create(True);
+end;
+{$ENDIF}
+
+function TMetricsService.SuspendResumeThreadById(const AProcessId, AThreadId: Cardinal;
+  const ASuspend: Boolean): Boolean;
+{$IFDEF MSWINDOWS}
+var
+  HThread: THandle;
+begin
+  Result := False;
+  // Never touch kernel pseudo-processes or this app's own UI thread
+  if (AProcessId <= 4) or (AThreadId = 0) or (AThreadId = GetCurrentThreadId) then Exit;
+
+  HThread := OpenThread(THREAD_SUSPEND_RESUME, False, AThreadId);
+  if HThread <> 0 then
+  begin
+    try
+      if ASuspend then
+        Result := (SuspendThread(HThread) <> DWORD($FFFFFFFF))
+      else
+        Result := (ResumeThread(HThread) <> DWORD($FFFFFFFF));
+    finally
+      CloseHandle(HThread);
+    end;
+  end;
+end;
+{$ELSE}
+begin
+  Result := False;
+end;
+{$ENDIF}
+
+function TMetricsService.TrimProcessWorkingSet(const AProcessId: Cardinal;
+  out ABeforeMB, AAfterMB, AFreedMB: Double): Boolean;
+{$IFDEF MSWINDOWS}
+var
+  HProc: THandle;
+  MemCounters: TWinProcessMemoryCounters;
+begin
+  Result := False;
+  ABeforeMB := 0.0;
+  AAfterMB := 0.0;
+  AFreedMB := 0.0;
+  if AProcessId <= 4 then Exit;
+
+  HProc := OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION or PROCESS_SET_QUOTA, False, AProcessId);
+  if HProc = 0 then
+    HProc := OpenProcess(PROCESS_SET_QUOTA, False, AProcessId);
+  if HProc = 0 then Exit;
+  try
+    MemCounters.cb := SizeOf(MemCounters);
+    if GetProcessMemoryInfo(HProc, @MemCounters, MemCounters.cb) then
+      ABeforeMB := MemCounters.WorkingSetSize / (1024.0 * 1024.0);
+
+    if EmptyWorkingSet(HProc) then
+    begin
+      Result := True;
+      MemCounters.cb := SizeOf(MemCounters);
+      if GetProcessMemoryInfo(HProc, @MemCounters, MemCounters.cb) then
+        AAfterMB := MemCounters.WorkingSetSize / (1024.0 * 1024.0);
+      AFreedMB := ABeforeMB - AAfterMB;
+      if AFreedMB < 0.0 then AFreedMB := 0.0;
+    end;
+  finally
+    CloseHandle(HProc);
+  end;
+end;
+{$ELSE}
+begin
+  Result := False;
+  ABeforeMB := 0.0;
+  AAfterMB := 0.0;
+  AFreedMB := 0.0;
+end;
+{$ENDIF}
+
+function TMetricsService.GetProcessIoPriorityById(const AProcessId: Cardinal): Integer;
+{$IFDEF MSWINDOWS}
+var
+  HProc: THandle;
+  Val: DWORD;
+  RetLen: DWORD;
+begin
+  Result := -1;
+  if AProcessId <= 4 then Exit;
+  HProc := OpenProcess(PROCESS_QUERY_INFORMATION, False, AProcessId);
+  if HProc = 0 then
+    HProc := OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, AProcessId);
+  if HProc = 0 then Exit;
+  try
+    Val := 0;
+    RetLen := 0;
+    if NtQueryInformationProcess(HProc, ProcessIoPriorityClass, @Val, SizeOf(DWORD), RetLen) = 0 then
+      Result := Integer(Val);
+  finally
+    CloseHandle(HProc);
+  end;
+end;
+{$ELSE}
+begin
+  Result := -1;
+end;
+{$ENDIF}
+
+function TMetricsService.SetProcessIoPriorityById(const AProcessId: Cardinal; const AIoPriority: Integer): Boolean;
+{$IFDEF MSWINDOWS}
+var
+  HProc: THandle;
+  Val: DWORD;
+begin
+  Result := False;
+  if (AProcessId <= 4) or (AIoPriority < 0) or (AIoPriority > 3) then Exit;
+  HProc := OpenProcess(PROCESS_SET_INFORMATION or PROCESS_QUERY_INFORMATION, False, AProcessId);
+  if HProc = 0 then
+    HProc := OpenProcess(PROCESS_SET_INFORMATION, False, AProcessId);
+  if HProc = 0 then Exit;
+  try
+    Val := DWORD(AIoPriority);
+    Result := NtSetInformationProcess(HProc, ProcessIoPriorityClass, @Val, SizeOf(DWORD), nil) = 0;
+  finally
+    CloseHandle(HProc);
+  end;
+end;
+{$ELSE}
+begin
+  Result := False;
+end;
+{$ENDIF}
+
+function TMetricsService.GetProcessPagePriorityById(const AProcessId: Cardinal): Integer;
+{$IFDEF MSWINDOWS}
+var
+  HProc: THandle;
+  Val: DWORD;
+  RetLen: DWORD;
+begin
+  Result := -1;
+  if AProcessId <= 4 then Exit;
+  HProc := OpenProcess(PROCESS_QUERY_INFORMATION, False, AProcessId);
+  if HProc = 0 then
+    HProc := OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, AProcessId);
+  if HProc = 0 then Exit;
+  try
+    Val := 0;
+    RetLen := 0;
+    if NtQueryInformationProcess(HProc, ProcessPagePriorityClass, @Val, SizeOf(DWORD), RetLen) = 0 then
+      Result := Integer(Val);
+  finally
+    CloseHandle(HProc);
+  end;
+end;
+{$ELSE}
+begin
+  Result := -1;
+end;
+{$ENDIF}
+
+function TMetricsService.SetProcessPagePriorityById(const AProcessId: Cardinal; const APagePriority: Integer): Boolean;
+{$IFDEF MSWINDOWS}
+var
+  HProc: THandle;
+  Val: DWORD;
+begin
+  Result := False;
+  if (AProcessId <= 4) or (APagePriority < 0) or (APagePriority > 5) then Exit;
+  HProc := OpenProcess(PROCESS_SET_INFORMATION or PROCESS_QUERY_INFORMATION, False, AProcessId);
+  if HProc = 0 then
+    HProc := OpenProcess(PROCESS_SET_INFORMATION, False, AProcessId);
+  if HProc = 0 then Exit;
+  try
+    Val := DWORD(APagePriority);
+    Result := NtSetInformationProcess(HProc, ProcessPagePriorityClass, @Val, SizeOf(DWORD), nil) = 0;
+  finally
+    CloseHandle(HProc);
+  end;
+end;
+{$ELSE}
+begin
+  Result := False;
 end;
 {$ENDIF}
 
